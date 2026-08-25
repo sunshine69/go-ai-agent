@@ -1,0 +1,50 @@
+# FastAPI Backend Requirements
+# NOTE: Using >= instead of == for packages that have native extensions
+# (Rust/C) — older pinned versions lack Python 3.14 wheels and would
+# trigger source builds, which are slow and error-prone.
+
+# Core framework
+fastapi>=0.115.6
+uvicorn>=0.32.1
+
+# MCP client for tool calling
+mcp>=1.0.0
+
+# LLM API
+openai>=2.0.0
+litellm>=1.58.2
+
+# Data validation
+pydantic>=2.10.3
+pydantic-settings>=2.7.1
+
+# Password hashing
+passlib[bcrypt]>=1.7.4
+
+# Database (SQLite for POC — no external server needed)
+# sqlite is built into Python, no extra package needed
+
+# Cache (in-memory for POC, can upgrade to Redis later)
+# redis>=5.2.1
+
+# CORS
+python-multipart>=0.0.17
+
+# Logging
+python-json-logger>=3.2.1
+
+# Task queue
+celery>=5.4.0
+
+# Environment management
+python-dotenv>=1.0.1
+
+# Testing
+pytest>=8.3.4
+pytest-asyncio>=0.24.0
+
+# RAG dependencies
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+pymupdf>=1.23.0
+markdown>=3.5.0
