@@ -183,6 +183,9 @@ class MCPClientManager:
 
     async def call_tool(self, tool_name: str, arguments: dict | None = None) -> str:
         """Call a tool on the MCP server."""
+        # MCP search is disabled — return empty instead of spawning the subprocess
+        if not MCP_ENABLED:
+            return ""
         if not self._ready:
             await self.initialize()
 
@@ -207,6 +210,9 @@ class MCPClientManager:
 
     async def list_tools(self) -> list[dict]:
         """List all available tools on the MCP server."""
+        # MCP search is disabled — report no tools
+        if not MCP_ENABLED:
+            return []
         if not self._ready:
             await self.initialize()
 
