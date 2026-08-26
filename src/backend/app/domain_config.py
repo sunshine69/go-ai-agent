@@ -1,5 +1,5 @@
 """
-Domain configuration for SuperSonicIQ.
+Domain configuration for GenIQ.
 
 This module defines the domain hierarchy, sub-categories, and associated keywords
 used to build domain-specific search context.
@@ -106,8 +106,8 @@ def _load_generic_domains() -> dict:
         "IT": {
             "display_name": "IT & Technology",
             "icon": "💻",
-            # TS = Sonic IT, where most radiology/IT content actually lives.
-            "confluence_spaces": ["TS"],
+            # Left empty (unscoped) so confluence_search can match any configured space.
+            "confluence_spaces": [],
             "keywords": [
                 "IT", "information technology", "technology", "software", "hardware",
                 "network", "helpdesk", "ticket", "account", "system", "application",
@@ -185,9 +185,8 @@ def _load_generic_domains() -> dict:
         "Science & Technology": {
             "display_name": "Science & Technology",
             "icon": "🔬",
-            # PMP = Programme Management, DPAI = Digital Pathology & AI, DHMG = DHM
-            # Molecular Genetics, SDX = Product - Sonic Dx (owns the Test Collection Manual).
-            "confluence_spaces": ["PMP", "DPAI", "DHMG", "SDX"],
+            # Left empty (unscoped) so confluence_search can match any configured space.
+            "confluence_spaces": [],
             "keywords": [
                 "science", "technology", "research", "laboratory", "lab", "analysis",
                 "experiment", "specimen", "sample", "test", "innovation", "R&D", "RnD",
@@ -234,7 +233,7 @@ def _load_generic_domains() -> dict:
                     "display_name": "Policies & Guidelines",
                     "icon": "📋",
                     "keywords": ["policy", "guideline", "standard", "SOP", "quality",
-                                 "accreditation", "NATA"],
+                                 "accreditation"],
                     "tools": [
                         ["confluence_search", {"keyword": "policy"}],
                         ["documents_search", {"keyword": "quality"}],
@@ -254,8 +253,8 @@ def _load_generic_domains() -> dict:
         "Operations & Logistics": {
             "display_name": "Operations & Logistics",
             "icon": "⚙️",
-            # TS = Sonic IT, SSVC = Site Services, SOS = Infrastructure. Broadest guess.
-            "confluence_spaces": ["TS", "SSVC", "SOS"],
+            # Left empty (unscoped) so confluence_search can match any configured space.
+            "confluence_spaces": [],
             "keywords": [
                 "operations", "operational", "logistics", "facility", "site",
                 "management", "supply", "chain", "dispatch", "fleet", "warehouse",
@@ -320,8 +319,7 @@ def _load_generic_domains() -> dict:
         "Finance & Admin": {
             "display_name": "Finance & Admin",
             "icon": "💰",
-            # No dedicated HR/People space identified yet — leave empty (unscoped)
-            # for confluence_search until the right space is confirmed.
+            # Left empty (unscoped) for confluence_search.
             "confluence_spaces": [],
             "keywords": [
                 "finance", "financial", "accounts", "payroll", "billing", "invoice",

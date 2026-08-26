@@ -267,7 +267,7 @@ class ContextBuilder:
 
         Tool selection is driven by the domain configuration (``domains.yaml`` or the
         built-in fallback) via each sub-category's ``tools`` list, rather than any
-        Sonic-specific hardcoded domain matching — so new/renamed domains work with no
+        Generic hardcoded domain matching — so new/renamed domains work with no
         code changes.
 
         A ``tools`` entry is a ``{"tool": name, "args": {...}}`` dict. Entries may use

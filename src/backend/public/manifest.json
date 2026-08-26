@@ -1,7 +1,7 @@
 {
-  "name": "SupersonicIQ - Sonic Healthcare Knowledge Assistant",
-  "short_name": "SupersonicIQ",
-  "description": "AI-Powered Knowledge Assistant for Sonic Healthcare",
+  "name": "GenIQ Knowledge Assistant",
+  "short_name": "GenIQ",
+  "description": "AI-Powered Knowledge Assistant for the organization",
   "start_url": "/",
   "display": "standalone",
   "orientation": "any",
@@ -9,12 +9,12 @@
   "theme_color": "#4c8bf5",
   "icons": [
     {
-      "src": "/supersonicIQ-192.png",
+      "src": "/geniq-192.png",
       "sizes": "192x192",
       "type": "image/png"
     },
     {
-      "src": "/supersonicIQ-512.png",
+      "src": "/geniq-512.png",
       "sizes": "512x512",
       "type": "image/png"
     }

@@ -1,6 +1,6 @@
-# SupersonicIQ Backend
+# GenIQ Backend
 
-FastAPI backend for SupersonicIQ — the AI-powered knowledge assistant for Sonic Healthcare.
+FastAPI backend for GenIQ — an AI-powered knowledge assistant.
 
 ## Setup
 
@@ -96,7 +96,7 @@ When a user asks a question, the system searches for relevant context using MCP 
 
 **Without Confluence configured:** If Confluence credentials are not set in `.env`, the Confluence MCP tool will return an error, which is silently skipped. The system will still search the local sources (Documents, Forms, Skills, Processes) and return a "Direct Answer" from the LLM if no local context is found.
 
-To get Sonic Healthcare-specific answers, configure at least one of:
+To get organization-specific answers, configure at least one of:
 - Confluence credentials (`CONFLUENCE_API_TOKEN`, `CONFLUENCE_USERNAME`) in `.env`, OR
 - Local document files in `./resources/documents/`
 

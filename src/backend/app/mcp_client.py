@@ -68,13 +68,13 @@ class MCPClientManager:
         # Resolve mcp_server_path — always relative to work_dir
         # 1. Use provided mcp_server_path if given
         # 2. Use MCP_SERVER_PATH env var if set and absolute
-        # 3. Fall back: <work_dir>/mcp-server/supersoniciq-mcp-server
+        # 3. Fall back: <work_dir>/mcp-server/geniq-mcp-server
         raw_env_value = os.getenv("MCP_SERVER_PATH")
         print_debug(f"MCP_SERVER_PATH raw env value: {raw_env_value!r}")
         if mcp_server_path:
             self.mcp_server_path = mcp_server_path
         else:
-            self.mcp_server_path = _clean_env_value(raw_env_value) or "supersoniciq-mcp-server"
+            self.mcp_server_path = _clean_env_value(raw_env_value) or "geniq-mcp-server"
 
         if not os.path.isabs(self.mcp_server_path):
             # Relative path — resolve relative to work_dir
@@ -84,7 +84,7 @@ class MCPClientManager:
 
         # On Windows the built binary carries a .exe suffix — auto-append it
         # if the configured path has no extension and doesn't exist as-is,
-        # so MCP_SERVER_PATH=supersoniciq-mcp-server keeps working there too.
+        # so MCP_SERVER_PATH=geniq-mcp-server keeps working there too.
         if os.name == "nt" and not os.path.exists(self.mcp_server_path):
             root, ext = os.path.splitext(self.mcp_server_path)
             if not ext and os.path.exists(root + ".exe"):

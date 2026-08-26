@@ -1,5 +1,5 @@
 """
-SupersonicIQ Backend - Main Application
+GenIQ Backend - Main Application
 """
 
 from fastapi import FastAPI
@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import os
 
 # Load .env file from backend directory (MCP_SERVER_PATH, LLM_*, etc.)
-# __file__ is at supersoniciq/src/backend/app/main.py
+# __file__ is at <project>/src/backend/app/main.py
 # Go up 2 levels: app → backend
 env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
 # utf-8-sig strips a leading BOM (Notepad's default "UTF-8" save on Windows),
@@ -51,8 +51,8 @@ _dump_env_debug()
 from app.routers import auth, conversations, messages, documents, forms, skills, processes, confluence, rag, domains, pwa
 
 app = FastAPI(
-    title="SupersonicIQ",
-    description="AI-Powered Knowledge Assistant for Sonic Healthcare",
+    title="GenIQ",
+    description="AI-Powered Knowledge Assistant",
     version="1.0.0",
 )
 
@@ -92,7 +92,7 @@ async def startup_event():
     logger = __import__('logging').getLogger(__name__)
 
     logger.info("=" * 60, flush=True)
-    logger.info("SupersonicIQ Backend Starting Up", flush=True)
+    logger.info("GenIQ Backend Starting Up", flush=True)
     logger.info("=" * 60, flush=True)
 
     if not MCP_ENABLED:

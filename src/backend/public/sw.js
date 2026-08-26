@@ -1,4 +1,4 @@
-const CACHE_NAME = "supersoniciq-v1";
+const CACHE_NAME = "geniq-v1";
 const STATIC_ASSETS = [
   "/",
   "/manifest.json",

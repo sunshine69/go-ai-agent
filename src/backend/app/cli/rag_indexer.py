@@ -23,8 +23,8 @@ from app.rag import RAGStore, RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP
 
 # Configuration
 RAG_DOCS_DIR = os.getenv("RAG_DOCS_DIR", "./resources/rag_documents")
-# From rag_indexer.py: supersoniciq/src/backend/app/cli/rag_indexer.py
-# Go up 5 levels to reach supersoniciq/, then resources/rag_documents
+# From rag_indexer.py: <project>/src/backend/app/cli/rag_indexer.py
+# Go up 5 levels to reach <project>/, then resources/rag_documents
 RAG_DOCS_DIR = os.path.normpath(os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))),
     "resources", "rag_documents"

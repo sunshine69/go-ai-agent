@@ -1,5 +1,5 @@
 """
-SupersonicIQ Backend - PWA endpoints (manifest.json, service worker, icons, index.html)
+GenIQ Backend - PWA endpoints (manifest.json, service worker, icons, index.html)
 """
 
 from fastapi import APIRouter
@@ -36,16 +36,16 @@ async def get_service_worker():
         content = f.read()
     return Response(content=content, media_type="application/javascript")
 
-@router.get("/supersonicIQ-192.png")
+@router.get("/geniq-192.png")
 async def get_icon_192():
     """Serve the 192x192 icon for PWA."""
-    with open(_file_path("supersonicIQ-192.png"), "rb") as f:
+    with open(_file_path("geniq-192.png"), "rb") as f:
         content = f.read()
     return Response(content=content, media_type="image/png")
 
-@router.get("/supersonicIQ-512.png")
+@router.get("/geniq-512.png")
 async def get_icon_512():
     """Serve the 512x512 icon for PWA."""
-    with open(_file_path("supersonicIQ-512.png"), "rb") as f:
+    with open(_file_path("geniq-512.png"), "rb") as f:
         content = f.read()
     return Response(content=content, media_type="image/png")
