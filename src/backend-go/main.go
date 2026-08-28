@@ -31,13 +31,13 @@ func main() {
 
 	fmt.Printf("[DEBUG] config %v\n", cfg)
 	// --- MCP manager -------------------------------------------------------
-	var manager *mcpclient.Manager
+	var manager *mcpclient.ResilientMCPClient
 	if cfg.MCPEnabled {
 		manager = mcpclient.NewManager(cfg.MCPServerPath, cfg.MCPWorkDir)
-		if err := manager.Initialize(); err != nil {
+		if err := manager.Inner.Initialize(); err != nil {
 			log.Printf("warning: MCP init failed, some tools will be unavailable: %v", err)
 		}
-		defer manager.Shutdown()
+		defer manager.Inner.Close()
 	} else {
 		log.Printf("MCP disabled; knowledge-base search endpoints will not function")
 	}

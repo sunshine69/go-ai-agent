@@ -1,6 +1,7 @@
 mcp-server/supersoniciq-mcp-server
 backend-go
 rag-indexer
+.geniq_rag.db*
 resources/**
 conversations.json
 **/rag_documents/**
@@ -60,3 +61,5 @@ models/.*
 *.list
 
 .aider*
+geniq-mcp-server
+.geniq_rag.*

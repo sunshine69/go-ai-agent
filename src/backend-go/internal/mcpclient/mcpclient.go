@@ -1,40 +1,38 @@
-// Package mcpclient provides a stdio-bound client for the Go MCP server
-// (mcp-server/). It drives the MCP JSON-RPC protocol over an in-process
-// subprocess, mirroring the behaviour of the Python backend's mcp_client.py:
-// the manager starts the MCP binary once at boot, runs the initialize
-// handshake, verifies tool availability, and exposes call_tool / list_tools.
-//
-// CallTool results are returned as concatenated text content (item.text),
-// identical to the mcp_client.CManager.call_tool contract consumed elsewhere.
 package mcpclient
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
-// JSON-RPC 2.0 message types
+// JSON-RPC 2.0 types
 // ---------------------------------------------------------------------------
 
 type jsonRPCRequest struct {
 	JSONRPC string      `json:"jsonrpc"`
-	ID      int64       `json:"id"`
+	ID      interface{} `json:"id"`
 	Method  string      `json:"method"`
 	Params  interface{} `json:"params,omitempty"`
 }
 
 type jsonRPCResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      interface{}     `json:"id"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *jsonRPCError   `json:"error,omitempty"`
+	JSONRPC      string          `json:"jsonrpc"`
+	ID           interface{}     `json:"id"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Error        *jsonRPCError   `json:"error,omitempty"`
+	ExtraContent *ExtraContent   `json:"extra_content,omitempty"`
 }
 
 type jsonRPCError struct {
@@ -42,7 +40,20 @@ type jsonRPCError struct {
 	Message string `json:"message"`
 }
 
-// mcpCallToolResult mirrors the MCP tools/call response body.
+// ---------------------------------------------------------------------------
+// MCP protocol types
+// ---------------------------------------------------------------------------
+
+type mcpTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	InputSchema json.RawMessage `json:"inputSchema"`
+}
+
+type mcpToolsListResult struct {
+	Tools []mcpTool `json:"tools"`
+}
+
 type mcpCallToolResult struct {
 	Content []struct {
 		Type string `json:"type"`
@@ -52,78 +63,266 @@ type mcpCallToolResult struct {
 }
 
 // ---------------------------------------------------------------------------
-// pipeReadWriter bridges an exec.Cmd's stdin/stdout into a single
-// io.ReadWriteCloser, so the MCPClient can both write requests and read
-// newline-delimited responses from the subprocess.
+// OpenAI tool-call types (what the LLM returns)
 // ---------------------------------------------------------------------------
 
+// ExtraContent holds provider-specific metadata attached to a tool call.
+type ExtraContent struct {
+	Google *GoogleExtraContent `json:"google,omitempty"`
+}
+
+type GoogleExtraContent struct {
+	ThoughtSignature string `json:"thought_signature,omitempty"`
+}
+
+// ToolCall mirrors the OpenAI delta.tool_calls structure
+type ToolCall struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+	ExtraContent *ExtraContent `json:"extra_content,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// MCPClient
+// ---------------------------------------------------------------------------
+
+type MCPClient struct {
+	mu               sync.Mutex
+	conn             io.ReadWriteCloser // TCP or pipe wrapper
+	scanner          *bufio.Scanner
+	nextID           atomic.Int64
+	tools            []mcpTool
+	spec             string // original spec for display
+	isSSE            bool   // true if using SSE/HTTP mode
+	isStreamableHTTP bool   // true if using streamable HTTP (single POST endpoint)
+	postURL          string // the endpoint URL for POSTing requests in SSE/streamable mode
+	httpClient       *http.Client
+	sessionID        string // Mcp-Session-Id for streamable HTTP sessions
+}
+
+// pipeReadWriter wraps an exec.Cmd's stdin/stdout into a single ReadWriteCloser
 type pipeReadWriter struct {
 	in  io.WriteCloser
 	out io.ReadCloser
 	cmd *exec.Cmd
 }
 
-func (p *pipeReadWriter) Read(b []byte) (int, error) { return p.out.Read(b) }
-
+func (p *pipeReadWriter) Read(b []byte) (int, error)  { return p.out.Read(b) }
 func (p *pipeReadWriter) Write(b []byte) (int, error) { return p.in.Write(b) }
-
 func (p *pipeReadWriter) Close() error {
 	p.in.Close()
 	p.out.Close()
 	return p.cmd.Wait()
 }
 
-// MCPClient is a minimal hand-rolled MCP stdio client. It mirrors the proven
-// pattern in sunshine69/go-ai-chat/chat/mcp-client.go but is scoped to the
-// tools the backend needs: initialize, tools/list, tools/call.
-//
-// A single MCPClient must not be used concurrently by multiple goroutines —
-// callers must serialise access via the manager's mutex (or a client pool).
-type MCPClient struct {
-	mu      sync.Mutex
-	conn    io.ReadWriteCloser
-	scanner *bufio.Scanner
-	nextID  int64
+// sseReadWriteCloser wraps an io.ReadCloser to satisfy io.ReadWriteCloser
+// because in SSE mode, writing is handled via HTTP POST, not the stream.
+type sseReadWriteCloser struct {
+	io.ReadCloser
 }
 
-// send writes a single newline-terminated JSON-RPC request.
+func (s *sseReadWriteCloser) Write(p []byte) (int, error) {
+	return len(p), nil // No-op
+}
+
+func NewManager(mcpServerPath, mcpWorkDir string) (newMCP *ResilientMCPClient) {
+	var err error
+
+	switch {
+	case strings.HasPrefix(mcpServerPath, "http"):
+		raw, e := ConnectStreamableHTTP(mcpServerPath)
+		if e != nil {
+			fmt.Fprintf(os.Stderr, "❌ MCP connect failed: %v\n", e)
+			return
+		}
+		newMCP, err = NewResilientPassthrough(raw), e
+	default:
+		fmt.Fprintf(os.Stderr, "🚀 Launching MCP stdio server: %s\n", mcpServerPath)
+		newMCP, err = NewResilientStdio(strings.Fields(mcpServerPath))
+	}
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ MCP connect failed: %v\n", err)
+		return
+	}
+	return newMCP
+}
+
+// ConnectStreamableHTTP connects to a modern MCP server using the Streamable HTTP
+// transport (MCP spec 2025-03-26). Each JSON-RPC call is an independent POST —
+// no persistent SSE stream is needed. This is what llama-server and newer MCP
+// clients expect at a single endpoint like /mcp.
+func ConnectStreamableHTTP(url string) (*MCPClient, error) {
+	fmt.Fprintf(os.Stderr, "[DEBUG] ConnectStreamableHTTP called: %s\n", url)
+	c := &MCPClient{
+		isStreamableHTTP: true,
+		postURL:          url,
+		spec:             url,
+		httpClient:       &http.Client{Timeout: 600 * time.Second},
+		// conn is unused for streamable HTTP but must be non-nil for Close()
+		conn: &sseReadWriteCloser{ReadCloser: io.NopCloser(strings.NewReader(""))},
+	}
+
+	if err := c.Initialize(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// ---------------------------------------------------------------------------
+// Internal JSON-RPC helpers
+// ---------------------------------------------------------------------------
+
 func (c *MCPClient) send(req jsonRPCRequest) error {
 	data, err := json.Marshal(req)
 	if err != nil {
 		return err
 	}
+
+	if c.isSSE {
+		if c.postURL == "" {
+			return fmt.Errorf("SSE postURL not Initialized")
+		}
+		resp, err := c.httpClient.Post(c.postURL, "application/json", bytes.NewBuffer(data))
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		return nil
+	}
+
+	// Standard TCP/Stdio: write with newline
 	data = append(data, '\n')
 	_, err = c.conn.Write(data)
 	return err
 }
 
-// recv reads the next non-empty JSON-RPC response line. Notifications (no id)
-// are skipped.
+// callStreamableHTTP performs a single POST for the streamable HTTP transport.
+// It handles both plain JSON responses and SSE-wrapped responses (data: {...}).
+// It also tracks the Mcp-Session-Id header for session continuity.
+func (c *MCPClient) callStreamableHTTP(method string, params interface{}) (*jsonRPCResponse, error) {
+	id := c.nextID.Add(1)
+	reqBody := jsonRPCRequest{
+		JSONRPC: "2.0",
+		ID:      id,
+		Method:  method,
+		Params:  params,
+	}
+
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequest("POST", c.postURL, bytes.NewBuffer(data))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json, text/event-stream")
+	httpReq.Header.Set("Mcp-Protocol-Version", "2025-03-26")
+	if c.sessionID != "" {
+		httpReq.Header.Set("Mcp-Session-Id", c.sessionID)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if sid := resp.Header.Get("Mcp-Session-Id"); sid != "" {
+		c.sessionID = sid
+	}
+
+	// 202 Accepted = server acknowledged but has no response body (e.g. notifications)
+	if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
+		return nil, nil
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	// Parse plain JSON or SSE-wrapped response
+	line := strings.TrimSpace(string(body))
+	for _, l := range strings.Split(line, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "data: ") {
+			line = strings.TrimPrefix(l, "data: ")
+			break
+		}
+		if strings.HasPrefix(l, ":") || strings.HasPrefix(l, "event:") || l == "" {
+			continue
+		}
+		if strings.HasPrefix(l, "{") {
+			line = l
+			break
+		}
+	}
+
+	var rpcResp jsonRPCResponse
+	if err := json.Unmarshal([]byte(line), &rpcResp); err != nil {
+		return nil, fmt.Errorf("parse response: %w\nbody: %s", err, string(body))
+	}
+	return &rpcResp, nil
+}
+
 func (c *MCPClient) recv() (*jsonRPCResponse, error) {
 	for c.scanner.Scan() {
 		line := strings.TrimSpace(c.scanner.Text())
-		if line == "" {
+		if line == "" || strings.HasPrefix(line, "event:") {
 			continue
 		}
+
+		// For SSE, the data is prefixed with "data: "
+		if c.isSSE && strings.HasPrefix(line, "data: ") {
+			line = strings.TrimPrefix(line, "data: ")
+		}
+
 		var resp jsonRPCResponse
 		if err := json.Unmarshal([]byte(line), &resp); err != nil {
 			continue
 		}
 		return &resp, nil
 	}
+
 	if err := c.scanner.Err(); err != nil {
 		return nil, err
 	}
 	return nil, io.EOF
 }
 
-// call performs a synchronous JSON-RPC request/response.
 func (c *MCPClient) call(method string, params interface{}) (*jsonRPCResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	id := c.nextID + 1
-	c.nextID = id
+	// Streamable HTTP: each call is a self-contained POST/response — no scanner needed
+	if c.isStreamableHTTP {
+		resp, err := c.callStreamableHTTP(method, params)
+		if err != nil {
+			return nil, err
+		}
+		// nil response is valid for notifications (202/204)
+		if resp == nil {
+			return &jsonRPCResponse{JSONRPC: "2.0"}, nil
+		}
+
+		return resp, nil
+	}
+
+	id := c.nextID.Add(1)
 	req := jsonRPCRequest{
 		JSONRPC: "2.0",
 		ID:      id,
@@ -133,14 +332,14 @@ func (c *MCPClient) call(method string, params interface{}) (*jsonRPCResponse, e
 	if err := c.send(req); err != nil {
 		return nil, err
 	}
-
+	// Skip notifications (no id) until we get our response
 	for {
 		resp, err := c.recv()
 		if err != nil {
 			return nil, err
 		}
 		if resp.ID == nil {
-			continue // notification, ignore
+			continue // notification — ignore
 		}
 		switch v := resp.ID.(type) {
 		case float64:
@@ -155,32 +354,41 @@ func (c *MCPClient) call(method string, params interface{}) (*jsonRPCResponse, e
 	}
 }
 
-// Initialize runs the MCP handshake (initialize + notifications/initialized)
-// and refreshes the cached tool list.
+// ---------------------------------------------------------------------------
+// MCP protocol handshake
+// ---------------------------------------------------------------------------
 func (c *MCPClient) Initialize() error {
-	params := map[string]interface{}{
-		"protocolVersion": "2024-11-05",
-		"capabilities":    map[string]interface{}{},
-		"clientInfo": map[string]interface{}{
-			"name":    "go-ai-agent-backend",
-			"version": "1.0.0",
-		},
+	// params := map[string]interface{}{
+	// 	"protocolVersion": "2024-11-05",
+	// 	"capabilities":    map[string]interface{}{},
+	// 	"clientInfo": map[string]interface{}{
+	// 		"name":    "aig",
+	// 		"version": "1.0.0",
+	// 	},
+	// }
+	// resp, err := c.call("Initialize", params)
+	// if err != nil {
+	// 	return fmt.Errorf("Initialize: %w", err)
+	// }
+	// if resp.Error != nil {
+	// 	return fmt.Errorf("Initialize error: %s", resp.Error.Message)
+	// }
+
+	if !c.isStreamableHTTP {
+		// SSE/stdio/TCP: send Initialized notification normally
+		c.mu.Lock()
+		_ = c.send(jsonRPCRequest{
+			JSONRPC: "2.0",
+			Method:  "notifications/Initialized",
+		})
+		c.mu.Unlock()
 	}
-	resp, err := c.call("initialize", params)
-	if err != nil {
-		return fmt.Errorf("initialize: %w", err)
-	}
-	if resp.Error != nil {
-		return fmt.Errorf("initialize error: %s", resp.Error.Message)
-	}
-	// Send the notifications/initialized handshake.
-	if err := c.send(jsonRPCRequest{JSONRPC: "2.0", Method: "notifications/initialized"}); err != nil {
-		return fmt.Errorf("send initialized notification: %w", err)
-	}
+	// Streamable HTTP: skip the notification — the server holds the connection
+	// open waiting for a stream and never sends a response, causing a hang.
+
 	return c.refreshTools()
 }
 
-// refreshTools lists the tools exposed by the MCP server and caches the count.
 func (c *MCPClient) refreshTools() error {
 	resp, err := c.call("tools/list", nil)
 	if err != nil {
@@ -189,28 +397,16 @@ func (c *MCPClient) refreshTools() error {
 	if resp.Error != nil {
 		return fmt.Errorf("tools/list error: %s", resp.Error.Message)
 	}
-	// Parse tools to surface the count for diagnostics.
-	var result struct {
-		Tools []struct {
-			Name string `json:"name"`
-		} `json:"tools"`
+	var result mcpToolsListResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return fmt.Errorf("parse tools: %w", err)
 	}
-	if err := json.Unmarshal(resp.Result, &result); err == nil && len(result.Tools) > 0 {
-		names := make([]string, len(result.Tools))
-		for i, t := range result.Tools {
-			names[i] = t.Name
-		}
-		fmt.Printf("[MCP] %d tools available: %s\n", len(names), strings.Join(names, ", "))
-	}
+	c.tools = result.Tools
 	return nil
 }
 
-// CallTool invokes a named MCP tool with the given arguments and returns the
-// concatenated text content of the result.
+// CallTool invokes a named MCP tool with the given arguments (JSON-encoded map).
 func (c *MCPClient) CallTool(name string, arguments map[string]interface{}) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	params := map[string]interface{}{
 		"name":      name,
 		"arguments": arguments,
@@ -227,146 +423,262 @@ func (c *MCPClient) CallTool(name string, arguments map[string]interface{}) (str
 		return "", fmt.Errorf("parse tool result: %w", err)
 	}
 	var parts []string
-	for _, item := range result.Content {
-		if item.Type == "text" {
-			parts = append(parts, item.Text)
+	for _, c := range result.Content {
+		if c.Type == "text" {
+			parts = append(parts, c.Text)
 		}
 	}
 	out := strings.Join(parts, "\n")
+	if result.IsError {
+		return "", fmt.Errorf("tool error: %s", out)
+	}
 	return out, nil
 }
 
-// Close shuts down the MCP subprocess.
+// Tools returns the list of available MCP tools.
+func (c *MCPClient) Tools() []mcpTool { return c.tools }
+
+// Close shuts down the MCP connection.
 func (c *MCPClient) Close() error { return c.conn.Close() }
 
 // ---------------------------------------------------------------------------
-// Manager — subprocess lifecycle + singleton
+// OpenAI "tools" schema conversion
 // ---------------------------------------------------------------------------
 
-// Manager owns the MCP subprocess lifecycle and provides tool calling. It is
-// started once at boot (like the Python MCPClientManager singleton).
-type Manager struct {
-	command     string
-	workDir     string
-	env         []string
-	client      *MCPClient
-	clientMu    sync.Mutex
-	ready       bool
-	initialized bool
-}
-
-// cleanEnvValue strips whitespace, accidental surrounding quotes, and embedded
-// control characters from an env value. Windows users commonly quote .env
-// values containing spaces/backslashes, and paths pasted from Explorer can
-// carry a stray \r or other control char that would make a path unresolvable.
-func cleanEnvValue(value string) string {
-	if value == "" {
-		return ""
-	}
-	var b strings.Builder
-	for _, r := range value {
-		if (r >= 0x20 && r != 0x7f) || r == '\t' {
-			b.WriteRune(r)
+// ToOpenAITools converts MCP tool descriptors to OpenAI-compatible tool specs.
+func ToOpenAITools(tools []mcpTool) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, t := range tools {
+		var schema interface{}
+		if len(t.InputSchema) > 0 {
+			_ = json.Unmarshal(t.InputSchema, &schema)
 		}
-	}
-	s := strings.TrimSpace(b.String())
-	if len(s) >= 2 {
-		if (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'') {
-			s = strings.TrimSpace(s[1 : len(s)-1])
+		if schema == nil {
+			schema = map[string]interface{}{"type": "object", "properties": map[string]interface{}{}}
 		}
+		out = append(out, map[string]interface{}{
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":        t.Name,
+				"description": t.Description,
+				"parameters":  schema,
+			},
+		})
 	}
-	return s
+	return out
 }
 
-// resolveWorkDir mirrors mcp_client.py::MCPClientManager __init__ work-dir
-// resolution: 1) explicit arg, 2) MCP_WORK_DIR env (absolute), 3) fall back to
-// cwd (the backend chdir's to the work dir at startup).
-func resolveWorkDir(explicit string) string {
-	if explicit != "" {
-		if abs, err := filepathAbspath(explicit); err == nil {
-			return abs
-		}
-		return explicit
-	}
-	if v := cleanEnvValue(os.Getenv("MCP_WORK_DIR")); v != "" && isAbsPath(v) {
-		return v
-	}
-	wd, _ := os.Getwd()
-	return wd
+type mcpResource struct {
+	URI         string `json:"uri"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
 }
 
-// resolveServerPath mirrors mcp_client.py MCP server-path resolution:
-// 1) explicit arg, 2) MCP_SERVER_PATH env (absolute), 3) fall back to
-// <work_dir>/mcp-server/<server>. Relative paths resolve against work_dir.
-func resolveServerPath(explicit, workDir string) string {
-	server := explicit
-	if server == "" {
-		server = cleanEnvValue(os.Getenv("MCP_SERVER_PATH"))
-	}
-	if server == "" {
-		server = "geniq-mcp-server"
-	}
-	if !isAbsPath(server) {
-		server = joinPath(workDir, "mcp-server", server)
-	}
-	if abs, err := filepathAbspath(server); err == nil {
-		server = abs
-	}
-	// On Windows the built binary carries a .exe suffix.
-	if runtimeIsWindows() && !hasFileExtension(server) {
-		if _, err := os.Stat(server + ".exe"); err == nil {
-			server += ".exe"
-		}
-	}
-	return server
+type mcpResourcesListResult struct {
+	Resources []mcpResource `json:"resources"`
 }
 
-// NewManager constructs a Manager, resolving the server path from explicit arg
-// or environment. The subprocess is NOT started until Initialize() is called.
-func NewManager(explicitServer, workDir string) *Manager {
-	wd := resolveWorkDir(workDir)
-	server := resolveServerPath(explicitServer, wd)
-	fmt.Printf("[MCP] work_dir=%s\n", wd)
-	fmt.Printf("[MCP] server=%s\n", server)
-	return &Manager{
-		command: server,
-		workDir: wd,
-		env:     os.Environ(),
-	}
+type mcpResourcesReadResult struct {
+	Contents []struct {
+		URI      string `json:"uri"`
+		MimeType string `json:"mimeType,omitempty"`
+		Text     string `json:"text,omitempty"`
+		Blob     string `json:"blob,omitempty"`
+	} `json:"contents"`
 }
 
-// Initialize starts the MCP subprocess and runs the handshake. Safe to call
-// once; repeated calls are no-ops.
-func (m *Manager) Initialize() error {
-	m.clientMu.Lock()
-	defer m.clientMu.Unlock()
-
-	if m.initialized {
-		return nil
-	}
-	fmt.Printf("[MCP] starting subprocess: %s (work-dir %s)\n", m.command, m.workDir)
-	client, err := startStdioProcess(m.command, m.workDir, m.env)
+// Resources returns the list of available MCP resources.
+func (c *MCPClient) Resources() ([]mcpResource, error) {
+	resp, err := c.call("resources/list", nil)
 	if err != nil {
-		// Don't fail the whole backend — the Python backend also logs and
-		// continues, letting tools fail per-request.
-		fmt.Printf("[MCP] failed to start subprocess: %v\n", err)
-		return fmt.Errorf("start MCP subprocess: %w", err)
+		return nil, fmt.Errorf("resources/list: %w", err)
 	}
-	if err := client.Initialize(); err != nil {
-		client.Close()
-		return fmt.Errorf("initialize MCP: %w", err)
+	if resp.Error != nil {
+		return nil, fmt.Errorf("resources/list error: %s", resp.Error.Message)
 	}
-	m.client = client
-	m.initialized = true
-	m.ready = true
-	fmt.Println("[MCP] server ready and available!")
+	var result mcpResourcesListResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil, fmt.Errorf("parse resources: %w", err)
+	}
+	return result.Resources, nil
+}
+
+// ReadResource fetches the contents of a resource by URI.
+func (c *MCPClient) ReadResource(uri string) (string, error) {
+	params := map[string]interface{}{
+		"uri": uri,
+	}
+	resp, err := c.call("resources/read", params)
+	if err != nil {
+		return "", fmt.Errorf("resources/read %s: %w", uri, err)
+	}
+	if resp.Error != nil {
+		return "", fmt.Errorf("resources/read error: %s", resp.Error.Message)
+	}
+	var result mcpResourcesReadResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return "", fmt.Errorf("parse resource read: %w", err)
+	}
+	var parts []string
+	for _, r := range result.Contents {
+		if r.Text != "" {
+			parts = append(parts, r.Text)
+		} else if r.Blob != "" {
+			parts = append(parts, fmt.Sprintf("<binary resource %s>", r.URI))
+		}
+	}
+	return strings.Join(parts, "\n"), nil
+}
+
+// SubscribeResource subscribes to change notifications for a resource URI.
+func (c *MCPClient) SubscribeResource(uri string) error {
+	params := map[string]interface{}{"uri": uri}
+	_, err := c.call("resources/subscribe", params)
+	return err
+}
+
+// UnsubscribeResource unsubscribes from change notifications for a resource URI.
+func (c *MCPClient) UnsubscribeResource(uri string) error {
+	params := map[string]interface{}{"uri": uri}
+	_, err := c.call("resources/unsubscribe", params)
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// ResilientMCPClient — auto-reconnecting wrapper for stdio servers
+// ---------------------------------------------------------------------------
+
+type MCPClientIface interface {
+	CallTool(name string, arguments map[string]interface{}) (string, error)
+	Tools() []mcpTool
+	Resources() ([]mcpResource, error)
+	ReadResource(uri string) (string, error)
+	refreshTools() error
+	Close() error
+}
+
+type ResilientMCPClient struct {
+	mu       sync.Mutex
+	Inner    *MCPClient
+	parts    []string
+	maxRetry int
+	backoff  time.Duration
+	Spec     string
+}
+
+func NewResilientStdio(parts []string) (*ResilientMCPClient, error) {
+	inner, err := ConnectStdio(parts)
+	if err != nil {
+		return nil, err
+	}
+	return &ResilientMCPClient{
+		Inner:    inner,
+		parts:    parts,
+		maxRetry: 3,
+		backoff:  500 * time.Millisecond,
+		Spec:     inner.spec,
+	}, nil
+}
+
+func NewResilientPassthrough(c *MCPClient) *ResilientMCPClient {
+	return &ResilientMCPClient{Inner: c, Spec: c.spec}
+}
+
+func (r *ResilientMCPClient) reconnect() error {
+	if r.parts == nil {
+		return fmt.Errorf("reconnect not supported for non-stdio connections")
+	}
+	if r.Inner != nil {
+		r.Inner.Close()
+	}
+	fmt.Fprintln(os.Stderr, "🔄 MCP server died — reconnecting…")
+	var lastErr error
+	for attempt := 1; attempt <= r.maxRetry; attempt++ {
+		c, err := ConnectStdio(r.parts)
+		if err == nil {
+			r.Inner = c
+			fmt.Fprintf(os.Stderr, "✅ MCP reconnected (attempt %d)\n", attempt)
+			return nil
+		}
+		lastErr = err
+		fmt.Fprintf(os.Stderr, "   ⚠️  attempt %d/%d failed: %v\n", attempt, r.maxRetry, err)
+		time.Sleep(r.backoff * time.Duration(attempt))
+	}
+	return fmt.Errorf("could not reconnect after %d attempts: %w", r.maxRetry, lastErr)
+}
+
+func isDeadErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "io: read/write on closed pipe") ||
+		strings.Contains(msg, "file already closed")
+}
+
+func (r *ResilientMCPClient) CallTool(name string, arguments map[string]interface{}) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	result, err := r.Inner.CallTool(name, arguments)
+	if err == nil {
+		return result, nil
+	}
+	if !isDeadErr(err) || r.parts == nil {
+		return "", err
+	}
+
+	if reconnErr := r.reconnect(); reconnErr != nil {
+		return "", fmt.Errorf("tool call failed and reconnect failed: %w", reconnErr)
+	}
+	return r.Inner.CallTool(name, arguments)
+}
+
+func (r *ResilientMCPClient) Tools() []mcpTool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Inner.Tools()
+}
+
+func (r *ResilientMCPClient) Resources() ([]mcpResource, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Inner.Resources()
+}
+
+func (r *ResilientMCPClient) ReadResource(uri string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Inner.ReadResource(uri)
+}
+
+func (r *ResilientMCPClient) refreshTools() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Inner.refreshTools()
+}
+
+func (r *ResilientMCPClient) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.Inner != nil {
+		return r.Inner.Close()
+	}
 	return nil
 }
 
-// startStdioProcess launches the MCP binary and wires stdin/stdout pipes.
-func startStdioProcess(command, workDir string, env []string) (*MCPClient, error) {
-	cmd := exec.Command(command, "-work-dir", workDir)
-	cmd.Env = env
+// ---------------------------------------------------------------------------
+// ConnectStdio launches a local MCP server process and communicates via stdio.
+// ---------------------------------------------------------------------------
+
+func ConnectStdio(parts []string) (*MCPClient, error) {
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("empty command")
+	}
+	cmd := exec.Command(parts[0], parts[1:]...)
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
@@ -375,116 +687,59 @@ func startStdioProcess(command, workDir string, env []string) (*MCPClient, error
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		stdin.Close()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		return nil, fmt.Errorf("start MCP server %q: %w", command, err)
+		return nil, fmt.Errorf("start MCP server %q: %w", parts, err)
 	}
+
 	pw := &pipeReadWriter{in: stdin, out: stdout, cmd: cmd}
-	c := &MCPClient{conn: pw}
+	c := &MCPClient{conn: pw, spec: parts[0]}
 	c.scanner = bufio.NewScanner(stdout)
 	c.scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
+	if err := c.Initialize(); err != nil {
+		pw.Close()
+		return nil, err
+	}
 	return c, nil
 }
 
-// CallTool calls a named tool. If the manager isn't initialized, it attempts a
-// lazy initialize (mirrors the Python manager which initializes on first call).
-func (m *Manager) CallTool(name string, args map[string]interface{}) (string, error) {
-	m.clientMu.Lock()
-	client := m.client
-	m.clientMu.Unlock()
+// parseAndFilterToolsRegex treats each comma-separated segment as a regex pattern.
+// If a tool name matches any of the patterns, it will be blocked.
+func parseAndFilterToolsRegex(allTools []mcpTool, blockedPatternsStr string) []mcpTool {
+	if strings.TrimSpace(blockedPatternsStr) == "" {
+		return allTools
+	}
 
-	if client == nil {
-		if err := m.Initialize(); err != nil {
-			return "", fmt.Errorf("MCP tool '%s' error: %s", name, err)
+	segments := strings.Split(blockedPatternsStr, ",")
+	var activeRegexes []*regexp.Regexp
+
+	for _, segment := range segments {
+		cleanPattern := strings.TrimSpace(segment)
+		if cleanPattern == "" {
+			continue
 		}
-		m.clientMu.Lock()
-		client = m.client
-		m.clientMu.Unlock()
-	}
-	if client == nil {
-		return "", fmt.Errorf("MCP tool '%s' error: MCP server not available", name)
-	}
-	return client.CallTool(name, args)
-}
-
-// ListTools returns the names of available MCP tools.
-func (m *Manager) ListTools() ([]string, error) {
-	m.clientMu.Lock()
-	client := m.client
-	m.clientMu.Unlock()
-	if client == nil {
-		if err := m.Initialize(); err != nil {
-			return nil, err
+		if expr, err := regexp.Compile(cleanPattern); err == nil {
+			activeRegexes = append(activeRegexes, expr)
 		}
-		m.clientMu.Lock()
-		client = m.client
-		m.clientMu.Unlock()
 	}
-	if client == nil {
-		return nil, fmt.Errorf("MCP server not available")
-	}
-	resp, err := client.call("tools/list", nil)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Error != nil {
-		return nil, fmt.Errorf("tools/list error: %s", resp.Error.Message)
-	}
-	var result struct {
-		Tools []struct {
-			Name string `json:"name"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		return nil, err
-	}
-	names := make([]string, 0, len(result.Tools))
-	for _, t := range result.Tools {
-		names = append(names, t.Name)
-	}
-	return names, nil
-}
 
-// Shutdown terminates the MCP subprocess.
-func (m *Manager) Shutdown() {
-	m.clientMu.Lock()
-	defer m.clientMu.Unlock()
-	if m.client != nil {
-		m.client.Close()
-		m.client = nil
-	}
-	m.initialized = false
-	m.ready = false
-}
+	var allowedTools []mcpTool
+	for _, tool := range allTools {
+		isBlocked := false
 
-// ManagerReady reports whether the MCP subprocess is up.
-func (m *Manager) ManagerReady() bool {
-	m.clientMu.Lock()
-	defer m.clientMu.Unlock()
-	return m.ready
-}
-
-// ---------------------------------------------------------------------------
-// Singleton
-// ---------------------------------------------------------------------------
-
-var (
-	globalManager *Manager
-	once          sync.Once
-)
-
-// GetManager returns the process-wide MCP manager, starting the subprocess on
-// first use. This mirrors the Python get_mcp_manager() singleton.
-func GetManager() *Manager {
-	once.Do(func() {
-		globalManager = NewManager(os.Getenv("MCP_SERVER_PATH"), os.Getenv("MCP_WORK_DIR"))
-		// Initialize eagerly at boot (matches main.py startup_event).
-		if err := globalManager.Initialize(); err != nil {
-			fmt.Printf("[MCP] warning: %v\n", err)
+		for _, expr := range activeRegexes {
+			if expr.MatchString(tool.Name) {
+				isBlocked = true
+				break
+			}
 		}
-	})
-	return globalManager
+
+		if isBlocked {
+			continue
+		}
+		allowedTools = append(allowedTools, tool)
+	}
+
+	return allowedTools
 }

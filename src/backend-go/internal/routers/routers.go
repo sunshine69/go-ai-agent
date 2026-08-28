@@ -27,7 +27,7 @@ import (
 // Handlers bundles the dependencies shared by all handlers. It is passed through
 // to each handler struct so routing logic stays uniform.
 type Handlers struct {
-	Manager *mcpclient.Manager
+	Manager *mcpclient.ResilientMCPClient
 
 	// LLM is the OpenAI-compatible client used by the messages handler.
 	LLM *llm.Client

@@ -21,13 +21,13 @@ import (
 // caller's Manager (each call is an independent MCP request).
 type ContextBuilder struct {
 	mcpEnabled bool
-	manager    *mcpclient.Manager
+	manager    *mcpclient.ResilientMCPClient
 	ragStore   *ragstore.RAGStore
 }
 
 // New builds a ContextBuilder. The manager may be nil when MCP is disabled. The
 // ragStore may be nil when RAG is disabled.
-func New(cfg *config.Config, manager *mcpclient.Manager, ragStore *ragstore.RAGStore) *ContextBuilder {
+func New(cfg *config.Config, manager *mcpclient.ResilientMCPClient, ragStore *ragstore.RAGStore) *ContextBuilder {
 	return &ContextBuilder{
 		mcpEnabled: cfg.MCPEnabled,
 		manager:    manager,
@@ -162,10 +162,13 @@ func (b *ContextBuilder) callMCPTool(name string, args map[string]any) string {
 	if b.manager == nil {
 		return "MCP tool '" + name + "' error: MCP manager unavailable"
 	}
+	fmt.Printf("[DBG-MCP] %s START args=%v\n", name, args)
 	result, err := b.manager.CallTool(name, args)
 	if err != nil {
+		fmt.Printf("[DBG-MCP] %s ERROR after timeout: %v\n", name, err)
 		return "MCP tool '" + name + "' error: " + err.Error()
 	}
+	fmt.Printf("[DBG-MCP] %s RETURNED (took ~s)\n", name)
 	return result
 }
 
