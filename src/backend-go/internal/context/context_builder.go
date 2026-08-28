@@ -2,6 +2,7 @@ package context
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -170,20 +171,25 @@ func (b *ContextBuilder) callMCPTool(name string, args map[string]any) string {
 
 // ragSearch runs a single RAG search, returning the formatted text block or an
 // error string on failure.
-func (b *ContextBuilder) ragSearch(ctx context.Context, query string) string {
+func (b *ContextBuilder) ragSearch(ctx context.Context, query string) taskResult {
 	if b.ragStore == nil {
-		return "RAG search error: RAG store unavailable"
+		fmt.Printf("[DBG-RAG] ragSearch query=%q — RAG store is nil, returning error\n", query)
+		return taskResult{text: "RAG search error: RAG store unavailable"}
 	}
-	results, err := b.ragStore.Search(ctx, query, 5, "")
+	raw, err := b.ragStore.Search(ctx, query, 5, "")
 	if err != nil {
-		return "RAG search error: " + err.Error()
+		fmt.Printf("[DBG-RAG] ragSearch query=%q — store.Search error: %v\n", query, err)
+		return taskResult{text: "RAG search error: " + err.Error()}
 	}
-	if len(results) == 0 {
-		return ""
+	fmt.Printf("[DBG-RAG] ragSearch query=%q — store.Search returned %d raw results (before formatting)\n", query, len(raw))
+	if len(raw) == 0 {
+		fmt.Printf("[DBG-RAG] ragSearch query=%q — no results, returning empty\n", query)
+		return taskResult{}
 	}
 	seen := map[string]bool{}
 	var bld strings.Builder
-	for _, r := range results {
+	sources := []string{}
+	for _, r := range raw {
 		if seen[r.ChunkID] {
 			continue
 		}
@@ -201,8 +207,18 @@ func (b *ContextBuilder) ragSearch(ctx context.Context, query string) string {
 		bld.WriteString(content)
 		bld.WriteString("...")
 		bld.WriteString("\n")
+		// Mirror the Python build_context: each RAG result contributes its
+		// source_file as a reported source (falling back to document title).
+		src := r.SourceFile
+		if src == "" {
+			src = r.DocumentTitle
+		}
+		if src != "" && !containsSource(sources, src) {
+			sources = append(sources, src)
+		}
 	}
-	return bld.String()
+	fmt.Printf("[DBG-RAG] ragSearch query=%q — collected %d source files\n", query, len(sources))
+	return taskResult{text: bld.String(), sources: sources}
 }
 
 // BuildContext runs MCP + RAG retrieval concurrently and returns the assembled
@@ -211,9 +227,14 @@ func (b *ContextBuilder) ragSearch(ctx context.Context, query string) string {
 func (b *ContextBuilder) BuildContext(message, domain, subCategory string) (string, []string, []map[string]string) {
 	contextText, sources, confluenceRefs := "", []string{}, []map[string]string{}
 
+	fmt.Printf("[DBG-RAG] BuildContext start: mcpEnabled=%v ragStore=%v domain=%q subCategory=%q message=%q\n",
+		b.mcpEnabled, b.ragStore, domain, subCategory, message)
+
 	searchTerms := getSearchTerms(message, domain, subCategory)
+	fmt.Printf("[DBG-RAG] searchTerms=%v\n", searchTerms)
 
 	tools := b.toolsForDomain(domain, subCategory, searchTerms)
+	fmt.Printf("[DBG-RAG] toolsForDomain => %d tool tasks (mcpEnabled=%v)\n", len(tools), b.mcpEnabled)
 
 	// Build the task list: MCP calls first, then RAG. Run concurrently.
 	tasks := make([]task, 0, len(tools)+1+len(searchTerms))
@@ -228,6 +249,7 @@ func (b *ContextBuilder) BuildContext(message, domain, subCategory string) (stri
 		ragQueries = append(ragQueries, term)
 		break // Python only injects one extra: the first non-matching search term.
 	}
+	fmt.Printf("[DBG-RAG] ragQueries=%d queries: %v\n", len(ragQueries), ragQueries)
 	for _, q := range ragQueries {
 		tasks = append(tasks, task{taskType: "rag", query: q})
 	}
@@ -235,7 +257,7 @@ func (b *ContextBuilder) BuildContext(message, domain, subCategory string) (stri
 	// Run all tasks concurrently, preserving result ordering.
 	ctx, cancel := context.WithTimeout(context.Background(), 60000000000) // 60s
 	defer cancel()
-	results := make([]string, len(tasks))
+	results := make([]taskResult, len(tasks))
 	var wg sync.WaitGroup
 	for i := range tasks {
 		wg.Add(1)
@@ -247,41 +269,51 @@ func (b *ContextBuilder) BuildContext(message, domain, subCategory string) (stri
 	wg.Wait()
 
 	for i, t := range tasks {
-		result := results[i]
-		if result == "" {
+		res := results[i]
+		if res.text == "" {
 			continue
 		}
 		if t.taskType == "mcp" {
-			if strings.Contains(strings.ToLower(result), "error") {
+			if strings.Contains(strings.ToLower(res.text), "error") {
 				continue
 			}
 			sourceName := mcpSourceName(t.toolName)
-			contextText += "=== " + sourceName + " Search (keyword: '" + t.query + "') ===\n" + result + "\n"
+			contextText += "=== " + sourceName + " Search (keyword: '" + t.query + "') ===\n" + res.text + "\n"
 			if !containsSource(sources, sourceName) {
 				sources = append(sources, sourceName)
 			}
-			for _, ref := range extractConfluenceRefs(t.toolName, result) {
+			for _, ref := range extractConfluenceRefs(t.toolName, res.text) {
 				if ref["id"] != "" {
 					confluenceRefs = append(confluenceRefs, ref)
 				}
 			}
 		} else { // rag
-			if !strings.Contains(result, "=== ") {
+			if !strings.Contains(res.text, "=== ") {
+				fmt.Printf("[DBG-RAG] rag task result EMPTY for query %q (no '=== ' marker found) — RAG returned no docs\n", t.query)
 				continue
 			}
-			contextText += "=== RAG Document Search (query: '" + t.query + "') ===\n" + result + "\n"
-			// RAG sources are the source_file of each result, but the text
-			// block is already the formatted titles; dedupe against titles.
+			contextText += "=== RAG Document Search (query: '" + t.query + "') ===\n" + res.text + "\n"
+			// Mirrors the Python build_context: append each RAG result's
+			// source_file to `sources` so the API reports real document
+			// sources instead of falling back to "Direct Answer".
+			for _, s := range res.sources {
+				if !containsSource(sources, s) {
+					sources = append(sources, s)
+				}
+			}
+			fmt.Printf("[DBG-RAG] rag task query %q added %d source files (total distinct sources now %d)\n", t.query, len(res.sources), len(sources))
 		}
 	}
 
 	return contextText, sources, confluenceRefs
 }
 
-// runTask dispatches a single task (MCP tool or RAG search) to its executor.
-func (b *ContextBuilder) runTask(ctx context.Context, t task) string {
+// runTask dispatches a single task (MCP tool or RAG search) to its executor,
+// returning both the formatted result text and the list of source names it
+// represents (the latter is only populated for RAG searches).
+func (b *ContextBuilder) runTask(ctx context.Context, t task) taskResult {
 	if t.taskType == "mcp" {
-		return b.callMCPTool(t.toolName, t.args)
+		return taskResult{text: b.callMCPTool(t.toolName, t.args)}
 	}
 	return b.ragSearch(ctx, t.query)
 }
@@ -338,6 +370,13 @@ type task struct {
 	toolName string
 	args     map[string]any
 	query    string
+}
+
+// taskResult is the output of running one task: the formatted result text plus
+// the list of source names it represents (populated only for RAG searches).
+type taskResult struct {
+	text    string
+	sources []string
 }
 
 func mcpSourceName(toolName string) string {

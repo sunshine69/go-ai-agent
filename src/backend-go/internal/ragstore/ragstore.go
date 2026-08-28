@@ -206,6 +206,8 @@ func (s *RAGStore) Search(ctx context.Context, query string, limit int, category
 		return nil, fmt.Errorf("embed query: %w", err)
 	}
 	queryBlob := serializeFloat32(embeddings[0])
+	fmt.Printf("[DBG-RAG] Search: dim=%d k=%d threshold=%.4f query=%q category=%q embedderDim=%d\n",
+		len(embeddings[0]), limit*4, s.cfg.ScoreThreshold, query, category, s.embedder.Dimensions())
 
 	// Over-fetch candidates by vector distance, then join + filter by
 	// category and threshold in SQL. k is generous (limit * 4, min 20) to
@@ -229,6 +231,9 @@ func (s *RAGStore) Search(ctx context.Context, query string, limit int, category
 	}
 	defer rows.Close()
 
+	// Count raw rows from vec0 (before threshold) so we can see if the
+	// embedding query is returning candidates at all.
+	var rawMatched, overThreshold int
 	var results []SearchResult
 	for rows.Next() {
 		var r SearchResult
@@ -237,16 +242,25 @@ func (s *RAGStore) Search(ctx context.Context, query string, limit int, category
 			&r.SourceCategory, &r.PageNumber, &r.Content, &distance); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
+		rawMatched++
 		// cosine distance from sqlite-vec is in [0, 2]; same conversion as
 		// the Python version.
 		r.SimilarityScore = 1.0 - (distance / 2.0)
+		fmt.Printf("[DBG-RAG] Search: candidate #%d score=%.4f title=%q file=%q category=%q page=%d\n",
+			rawMatched, r.SimilarityScore, r.DocumentTitle, r.SourceFile, r.SourceCategory, r.PageNumber)
 		if r.SimilarityScore < s.cfg.ScoreThreshold {
 			continue
 		}
+		overThreshold++
 		results = append(results, r)
 		if len(results) >= limit {
 			break
 		}
+	}
+	if rawMatched == 0 {
+		fmt.Printf("[DBG-RAG] Search: NO candidate rows returned from vec0 MATCH (db likely empty or dim mismatch) — dbPath=%s\n", s.cfg.DBPath)
+	} else {
+		fmt.Printf("[DBG-RAG] Search: %d raw candidates, %d passed threshold=%.4f, %d returned\n", rawMatched, overThreshold, s.cfg.ScoreThreshold, len(results))
 	}
 	return results, rows.Err()
 }

@@ -6,6 +6,7 @@ src/backend/conversations.json
 **/node_modules/**
 **/build/**
 **/rag_chroma_db/**
+**/rag-db/**
 **/venv/**
 .agents/**
 *.pyc

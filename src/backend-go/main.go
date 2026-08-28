@@ -26,8 +26,10 @@ func main() {
 		envDotPath = os.Args[1]
 	}
 
+	println("[DEBUG] envDotPAth: " + envDotPath)
 	cfg := config.Load(envDotPath)
 
+	fmt.Printf("[DEBUG] config %v\n", cfg)
 	// --- MCP manager -------------------------------------------------------
 	var manager *mcpclient.Manager
 	if cfg.MCPEnabled {
