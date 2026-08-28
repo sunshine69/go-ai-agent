@@ -17,6 +17,7 @@ package routers
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/stevek/go-ai-agent/backend-go/internal/config"
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
@@ -35,6 +36,12 @@ type Handlers struct {
 	Rag *ragstore.RAGStore
 	// Config holds the resolved configuration for building the context builder.
 	Cfg *config.Config
+}
+
+// Cors returns the effective CORS settings for the middleware, sourced from the
+// backend configuration.
+func (h Handlers) Cors() config.Cors {
+	return h.Cfg.Cors()
 }
 
 // ServeMux builds the /api/* mux for the backend. The routes mirror the Python
@@ -63,7 +70,7 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("/api/auth/login", auth.handleLogin)
 	mux.HandleFunc("/api/auth/me", auth.handleMe)
 
-	return corsMiddleware(http.Handler(mux))
+	return corsMiddleware(http.Handler(mux), h.Cors())
 }
 
 // CORS middleware wraps a handler so browser-based frontends (notably the Wails
@@ -73,12 +80,46 @@ func (h Handlers) ServeMux() http.Handler {
 // producing "Load failed" and "New Conversation" doing nothing.
 //
 // It is intentionally minimal and permissive so it never alters the shape or
-// behaviour of the endpoints it wraps.
-func corsMiddleware(next http.Handler) http.Handler {
+// behaviour of the endpoints it wraps. When enabled is false the handler passes
+// straight through so no CORS headers are emitted at all.
+func corsMiddleware(next http.Handler, cors config.Cors) http.Handler {
+	// When disabled, pass straight through so no CORS headers are emitted at
+	// all (useful for server-side-only clients or locking the backend down).
+	if !cors.Enabled {
+		return next
+	}
+
+	// Allow-Origin header: "" is treated as a wildcard ("*"); ":" is a
+	// sentinel meaning "reflect the request origin" (needed for the
+	// Access-Control-Allow-Credentials: true case, where a bare "*" is not
+	// allowed by browsers).
+	originHeader := cors.Origin
+	if originHeader == "" {
+		originHeader = "*"
+	}
+	if originHeader == ":" && cors.AllowCreds {
+		originHeader = "" // trigger origin reflection below
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+		// Credentials + wildcard aren't allowed together: when a specific
+		// origin is requested we reflect the request's Origin back verbatim.
+		if originHeader == "" {
+			if o := r.Header.Get("Origin"); o != "" {
+				originHeader = o
+			}
+		}
+
+		w.Header().Set("Access-Control-Allow-Origin", originHeader)
+		if cors.AllowCreds {
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+		}
+		w.Header().Set("Access-Control-Allow-Methods", cors.Methods)
+		w.Header().Set("Access-Control-Allow-Headers", cors.AllowHeaders)
+		if cors.MaxAge > 0 {
+			w.Header().Set("Access-Control-Max-Age", strconv.Itoa(cors.MaxAge))
+		}
+
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return

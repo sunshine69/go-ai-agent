@@ -43,6 +43,17 @@ type Config struct {
 	EmbeddingBaseURL string
 	EmbeddingAPIKey  string
 	EmbeddingDim     int
+
+	// CORS (HTTP middleware for browser-based frontends, e.g. the Wails WebView
+	// at origin "wails://"). Every knob is dotenv-configurable; the defaults are
+	// already permissive enough that no changes are needed to make the Wails app
+	// work. Set CORS_ENABLED=false to disable the middleware entirely.
+	CORSEnabled      bool
+	CORSAuthority    string // Access-Control-Allow-Origin (":" = any, or a comma list)
+	CORSMethods      string // Access-Control-Allow-Methods
+	CORSAllowHeaders string // Access-Control-Allow-Headers
+	CORSMaxAge       int    // Access-Control-Max-Age (seconds)
+	CORSAllowCreds   bool   // Access-Control-Allow-Credentials: true
 }
 
 func envKey(name, fallback string) string {
@@ -142,5 +153,50 @@ func Load(envDotPath string) *Config {
 	// model). Override via EMBEDDING_DIM for other models.
 	cfg.EmbeddingDim = envInt("EMBEDDING_DIM", 384)
 
+	// --- CORS --------------------------------------------------------------
+	// Allow the origin to opt out of the CORS middleware, or to pin down
+	// specific values for a tighter security posture.
+	cfg.CORSEnabled = envBool("CORS_ENABLED", true)
+
+	corsAuthority := envKey("CORS_ORIGIN", "*")
+	if corsAuthority != "" {
+		cfg.CORSAuthority = corsAuthority
+	}
+	corsMethods := envKey("CORS_METHODS", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+	if corsMethods != "" {
+		cfg.CORSMethods = corsMethods
+	}
+	corsAllowHeaders := envKey("CORS_ALLOW_HEADERS", "Content-Type, Authorization, Accept")
+	if corsAllowHeaders != "" {
+		cfg.CORSAllowHeaders = corsAllowHeaders
+	}
+	corsMaxAge := envInt("CORS_MAX_AGE", 3600)
+	if corsMaxAge > 0 {
+		cfg.CORSMaxAge = corsMaxAge
+	}
+	cfg.CORSAllowCreds = envBool("CORS_ALLOW_CREDENTIALS", false)
+
 	return cfg
+}
+
+// Cors returns the resolved CORS settings.
+func (c *Config) Cors() Cors {
+	return Cors{
+		Enabled:      c.CORSEnabled,
+		Origin:       c.CORSAuthority,
+		Methods:      c.CORSMethods,
+		AllowHeaders: c.CORSAllowHeaders,
+		MaxAge:       c.CORSMaxAge,
+		AllowCreds:   c.CORSAllowCreds,
+	}
+}
+
+// Cors holds the effective CORS settings for the HTTP middleware.
+type Cors struct {
+	Enabled      bool
+	Origin       string // "*" for any origin, or a specific origin
+	Methods      string
+	AllowHeaders string
+	MaxAge       int
+	AllowCreds   bool
 }

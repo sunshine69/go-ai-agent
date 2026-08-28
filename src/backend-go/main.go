@@ -34,10 +34,17 @@ func main() {
 	var manager *mcpclient.ResilientMCPClient
 	if cfg.MCPEnabled {
 		manager = mcpclient.NewManager(cfg.MCPServerPath, cfg.MCPWorkDir)
-		if err := manager.Inner.Initialize(); err != nil {
-			log.Printf("warning: MCP init failed, some tools will be unavailable: %v", err)
+		if manager == nil {
+			// NewManager returns nil on failure (e.g. MCP binary not found).
+			// Treat it as "MCP unavailable" rather than panicking so the HTTP
+			// server still comes up for the other endpoints.
+			log.Printf("warning: MCP manager failed to initialise; knowledge-base search will be unavailable")
+		} else {
+			if err := manager.Inner.Initialize(); err != nil {
+				log.Printf("warning: MCP init failed, some tools will be unavailable: %v", err)
+			}
+			defer manager.Inner.Close()
 		}
-		defer manager.Inner.Close()
 	} else {
 		log.Printf("MCP disabled; knowledge-base search endpoints will not function")
 	}

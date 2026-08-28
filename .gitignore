@@ -1,4 +1,5 @@
 mcp-server/supersoniciq-mcp-server
+**/.playwright-mcp/**
 backend-go
 rag-indexer
 .geniq_rag.db*
