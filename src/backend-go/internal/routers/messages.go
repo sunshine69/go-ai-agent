@@ -132,7 +132,7 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 	for _, t := range history {
 		chatHistory = append(chatHistory, llm.ChatMessage{Role: t.Role, Content: t.Content})
 	}
-	answer := m.h.LLM.Answer(r.Context(), systemPrompt(), chatHistory, msg)
+	answer := m.h.LLM.Answer(r.Context(), systemPrompt(), chatHistory, contextText, msg)
 
 	// --- Persist the current turn -----------------------------------------
 	// The assistant answer is persisted separately from the user turn.

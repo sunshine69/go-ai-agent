@@ -83,7 +83,12 @@ type CompletionResponse struct {
 // Answer streams the chat completion and returns the assistant's text. It
 // mirrors the Python contract: on any error it returns a friendly error string
 // rather than panicking.
-func (c *Client) Answer(ctx context.Context, system string, history []ChatMessage, user string) string {
+//
+// context holds the gathered MCP + RAG knowledge-base text. When present it is
+// injected as an explicit user message between the history and the question,
+// exactly as the Python get_llm_answer does, so the model answers from the
+// retrieved documents instead of falling back to generic knowledge.
+func (c *Client) Answer(ctx context.Context, system string, history []ChatMessage, context, user string) string {
 	msgs := []ChatMessage{{Role: "system", Content: system}}
 	for _, h := range history {
 		if h.Role != "user" && h.Role != "assistant" {
@@ -94,7 +99,18 @@ func (c *Client) Answer(ctx context.Context, system string, history []ChatMessag
 		}
 		msgs = append(msgs, h)
 	}
-	msgs = append(msgs, ChatMessage{Role: "user", Content: user})
+	// Mirror Python get_llm_answer: inject context as a distinct user message
+	// so the model treats it as genuine knowledge-base content.
+	if strings.TrimSpace(context) != "" {
+		msgs = append(msgs, ChatMessage{
+			Role: "user",
+			Content: fmt.Sprintf(
+				"Here is additional context from the knowledge base:\n\n%s\n\nPlease answer this question:\n\n%s",
+				context, user),
+		})
+	} else {
+		msgs = append(msgs, ChatMessage{Role: "user", Content: user})
+	}
 
 	temp := c.cfg.Temperature
 	reqBody := CompletionRequest{

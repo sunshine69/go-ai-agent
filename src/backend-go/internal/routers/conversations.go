@@ -253,6 +253,17 @@ func appendMessage(id, role, content, key string) {
 		Content: content,
 		Key:     key,
 	})
+	// Mirror the Python backend: seed a readable title from the first user
+	// message instead of leaving the generic "New Conversation" label.
+	if role == "user" && c.Title == "New Conversation" {
+		preview := strings.Join(strings.Fields(content), " ")
+		if len(preview) > 60 {
+			preview = preview[:60] + "…"
+		} else if preview == "" {
+			preview = "Untitled"
+		}
+		c.Title = preview
+	}
 	c.UpdatedAt = nowISO()
 	persistConversations()
 }
