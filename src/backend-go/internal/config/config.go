@@ -1,0 +1,146 @@
+// Package config loads configuration from environment variables (and an optional
+// .env file), mirroring the env-driven design of the Python backend.
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+// Config holds all runtime configuration resolved from environment variables.
+type Config struct {
+	// Server
+	Host string
+	Port string
+
+	// LLM (OpenAI-compatible endpoint)
+	LLMModel       string
+	LLMAPIKey      string
+	LLMBASEURL     string
+	LLMTemperature float64
+
+	// MCP (stdio subprocess to the structured-data search server)
+	MCPEnabled    bool
+	MCPServerPath string
+	MCPWorkDir    string
+
+	// Confluence
+	ConfluenceBaseURL string
+
+	// RAG (vector search via sqlite-vec + external embeddings)
+	RAGEnabled        bool
+	RAGDocsDir        string
+	RAGChunkSize      int
+	RAGChunkOverlap   int
+	RAGSearchLimit    int
+	RAGScoreThreshold float64
+	RAGDBPath         string
+	RAGEmbeddingModel string
+
+	// Embeddings (OpenAI-compatible /v1/embeddings)
+	EmbeddingBaseURL string
+	EmbeddingAPIKey  string
+	EmbeddingDim     int
+}
+
+func envKey(name, fallback string) string {
+	if v, ok := os.LookupEnv(name); ok && v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envBool(name string, fallback bool) bool {
+	if v, ok := os.LookupEnv(name); ok && v != "" {
+		b, _ := strconv.ParseBool(strings.ToLower(v))
+		return b
+	}
+	return fallback
+}
+
+func envInt(name string, fallback int) int {
+	if v, ok := os.LookupEnv(name); ok && v != "" {
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+// stripTrailingSuffix removes the given suffix from s, if present.
+func stripTrailingSuffix(s, suffix string) string {
+	if suffix != "" && strings.HasSuffix(s, suffix) {
+		return s[:len(s)-len(suffix)]
+	}
+	return s
+}
+func envFloat(name string, fallback float64) float64 {
+	if v, ok := os.LookupEnv(name); ok && v != "" {
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err == nil {
+			return f
+		}
+	}
+	return fallback
+}
+
+// Load reads configuration from the environment. If envDotPath is a path to a
+// .env file that exists, it is sourced first (KEY=value lines).
+func Load(envDotPath string) *Config {
+	if envDotPath != "" {
+		envFileLoad(envDotPath)
+	} else {
+		// No explicit .env path given: mirror Python's load_dotenv() (no
+		// argument) by sourcing ./.env from the current working directory if
+		// one exists. A missing file is not fatal — callers run from different
+		// dirs (repo root vs. src/backend-go) and not all have one.
+		if wd, err := os.Getwd(); err == nil {
+			envFileLoad(filepath.Join(wd, ".env"))
+		}
+	}
+
+	// Resolve RAG docs dir: default to <cwd>/resources/rag_documents (matches
+	// the Python backend's computed default).
+	wd, _ := os.Getwd()
+	rAGDocsDir := envKey("RAG_DOCS_DIR", filepath.Join(wd, "resources", "rag_documents"))
+
+	cfg := &Config{
+		Host:              envKey("HOST", "0.0.0.0"),
+		Port:              envKey("PORT", "8000"),
+		LLMModel:          envKey("LLM_MODEL", "gpt-4o"),
+		LLMAPIKey:         envKey("LLM_API_KEY", "sk-placeholder"),
+		LLMBASEURL:        envKey("LLM_BASE_URL", ""),
+		LLMTemperature:    envFloat("LLM_TEMPERATURE", 0.1),
+		MCPEnabled:        envBool("MCP_ENABLED", true),
+		MCPServerPath:     envKey("MCP_SERVER_PATH", "geniq-mcp-server"),
+		MCPWorkDir:        envKey("MCP_WORK_DIR", wd),
+		ConfluenceBaseURL: envKey("CONFLUENCE_BASE_URL", ""),
+		RAGEnabled:        envBool("RAG_ENABLED", true),
+		RAGDocsDir:        rAGDocsDir,
+		RAGChunkSize:      envInt("RAG_CHUNK_SIZE", 1500),
+		RAGChunkOverlap:   envInt("RAG_CHUNK_OVERLAP", 300),
+		RAGSearchLimit:    envInt("RAG_SEARCH_LIMIT", 5),
+		RAGScoreThreshold: envFloat("RAG_SCORE_THRESHOLD", 0.25),
+		RAGDBPath:         envKey("RAG_DB_PATH", filepath.Join(wd, ".geniq_rag.db")),
+		RAGEmbeddingModel: envKey("RAG_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
+		EmbeddingAPIKey:   envKey("EMBEDDING_API_KEY", envKey("LLM_API_KEY", "sk-placeholder")),
+	}
+
+	// Embedding base URL defaults to the LLM base URL unless explicitly set, so
+	// a single local OpenAI-compatible server can serve both.
+	if v := envKey("EMBEDDING_BASE_URL", cfg.LLMBASEURL); v != "" {
+		// Normalise: strip a trailing "/v1" so the path (host-only) can be
+		// safely appended with "/v1/embeddings" by the embeddings client,
+		// mirroring how the LLM client builds "/v1/chat/completions".
+		cfg.EmbeddingBaseURL = stripTrailingSuffix(v, "/v1")
+	}
+
+	// Embedding dimension: 384 is the dimension of all-MiniLM-L6-v2 (the default
+	// model). Override via EMBEDDING_DIM for other models.
+	cfg.EmbeddingDim = envInt("EMBEDDING_DIM", 384)
+
+	return cfg
+}

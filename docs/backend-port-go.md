@@ -295,3 +295,5 @@ The Wails frontend is already built against the current shapes. **The Go backend
 | concurrency | `asyncio.gather` | goroutines + channels/`errgroup` |
 | RAG embeddings | `sentence-transformers` + `chromadb` | **decide (§4.5)** |
 | static/PWA | `pwa.py` (Python) | `go:embed` (if Python dropped for static) |
+
+If u need example of mcp client in go - use this file https://github.com/sunshine69/go-ai-chat/blob/main/chat/mcp-client.go . For PDF parser lib use https://github.com/gen2brain/go-fitz
