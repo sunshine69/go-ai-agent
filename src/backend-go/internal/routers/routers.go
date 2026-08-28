@@ -39,7 +39,7 @@ type Handlers struct {
 
 // ServeMux builds the /api/* mux for the backend. The routes mirror the Python
 // main.py mounts exactly; no endpoint-shape changes are introduced here.
-func (h Handlers) ServeMux() *http.ServeMux {
+func (h Handlers) ServeMux() http.Handler {
 	mux := http.NewServeMux()
 
 	domains := newDomainsHandler()
@@ -63,7 +63,28 @@ func (h Handlers) ServeMux() *http.ServeMux {
 	mux.HandleFunc("/api/auth/login", auth.handleLogin)
 	mux.HandleFunc("/api/auth/me", auth.handleMe)
 
-	return mux
+	return corsMiddleware(http.Handler(mux))
+}
+
+// CORS middleware wraps a handler so browser-based frontends (notably the Wails
+// desktop WebView at origin "wails://") can read cross-origin responses from the
+// /api/* endpoints served on the same port. Without it, a Wails fetch to
+// localhost:8000 fails the CORS preflight (405) and the body is unreadable,
+// producing "Load failed" and "New Conversation" doing nothing.
+//
+// It is intentionally minimal and permissive so it never alters the shape or
+// behaviour of the endpoints it wraps.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, PATCH")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // writeJSON marshals v and writes it with the proper content type and status.
