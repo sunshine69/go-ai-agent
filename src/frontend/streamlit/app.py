@@ -15,6 +15,7 @@ Workflow:
 
 import streamlit as st
 import requests
+import threading
 import os
 import json
 from dotenv import load_dotenv
@@ -149,6 +150,36 @@ if "selected_sub_category" not in st.session_state:
     st.session_state.selected_sub_category = None
 if "domains" not in st.session_state:
     st.session_state.domains = None
+if "stream_active" not in st.session_state:
+    st.session_state.stream_active = False
+if "stream" not in st.session_state:
+    st.session_state.stream = _new_stream_state()
+if "stream_worker" not in st.session_state:
+    st.session_state.stream_worker = None
+
+def _new_stream_state():
+    """Return a fresh in-progress-stream record for the next assistant turn."""
+    return {
+        "resp": None,     # open requests.Response from /api/messages/stream
+        "data": None,     # payload that was sent
+        "full_text": "",  # accumulated streamed answer text
+        "sources": [],    # RAG/document sources
+        "confluence": [], # Confluence page links
+        "conversation_id": "",
+        "done": False,
+        "error": None,
+    }
+
+def clear_stream():
+    """Close any open SSE connection and reset in-progress-stream state."""
+    try:
+        resp = st.session_state.stream.get("resp")
+        if resp:
+            resp.close()
+    except Exception:
+        pass
+    st.session_state.stream_active = False
+    st.session_state.stream = _new_stream_state()
 
 # --- API helpers ---
 
@@ -285,6 +316,180 @@ def send_message(prompt):
 
     result = post_api_request("/messages", data)
     return result
+
+
+def stream_message(prompt):
+    """Send a message to the backend via the SSE streaming endpoint and
+    stream the assistant answer token-by-token.
+
+    The caller drives this from within an ``st.chat_message`` block using a
+    generator (``for _ in st.session_state.stream['resp'].iter_lines(...):
+    _ = stream_message(prompt)``). Each ``next()`` returns a tuple
+    ``(event, payload)`` where ``event`` is one of ``"context"``, ``"token"``,
+    ``"finished"``, ``"error"`` or ``"done"``.
+
+    ``"context"``   -> (conversation_id, sources, confluence_links, system_prompt)
+    ``"token"``     -> (text_chunk,)
+    ``"finished"``  -> (full_answer, sources, confluence_links)
+    ``"error"``     -> (message,)
+    ``"done"``      -> (closed,)   -- stream fully consumed / closed
+    """
+    st.session_state.stream_active = True
+
+    # Build the same payload POST /api/messages sends.
+    data = {"message": prompt}
+    if st.session_state.current_conversation:
+        data["conversation_id"] = st.session_state.current_conversation
+    data["history"] = build_history()
+
+    selected_domain, sub_cat_info, _ = get_selected_domain_info()
+    if selected_domain:
+        data["domain"] = st.session_state.selected_domain
+        if sub_cat_info:
+            data["sub_category"] = st.session_state.selected_sub_category
+
+    session = requests.Session()
+    resp = session.post(
+        f"{API_BASE}/messages/stream",
+        json=data,
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
+        timeout=API_TIMEOUT,
+        stream=True,
+    )
+    resp.raise_for_status()
+    st.session_state.stream = {
+        **st.session_state.stream,
+        "resp": resp,
+        "data": data,
+        "full_text": "",
+        "sources": [],
+        "confluence": [],
+        "conversation_id": "",
+        "done": False,
+        "error": None,
+    }
+
+    # Parse SSE: events arrive as ``event: <name>\\n\\n<json>\\n\\n``. Some
+    # servers emit the payload directly on a plain ``data:`` line, so accept
+    # both forms.
+    buffer = {}
+
+    def parse_line(line):
+        nonlocal buffer
+        line = line.rstrip("\r")
+        if line.startswith("event:"):
+            return ("event", line[6:].strip())
+        if line.startswith("data:"):
+            return ("data", line[5:].strip())
+        if line.strip() == "":
+            return ("blank", "")
+        # No "event:" prefix at all (some servers just send raw JSON lines).
+        return ("raw", line)
+
+    first_line = True
+    current_event = None
+
+    for raw_line in resp.iter_lines(decode_unicode=True):
+        if raw_line is None:
+            continue
+
+        # Decode bytes if needed.
+        if isinstance(raw_line, bytes):
+            line = raw_line.decode("utf-8", errors="replace")
+        else:
+            line = raw_line
+
+        key, value = parse_line(line)
+        if first_line:
+            # The very first raw line may itself be ``event:`` or raw JSON.
+            first_line = False
+            if key == "raw":
+                current_event = "raw"
+                buffer = _event_value("raw", value)
+                continue
+
+        if key == "event":
+            # Flush any buffered payload from the previous event.
+            if current_event and buffer:
+                parsed = _emit(current_event, buffer)
+                if parsed is not None:
+                    yield parsed
+            current_event = value
+            buffer = {}
+        elif key == "data":
+            buffer = value
+        elif key == "raw":
+            current_event = current_event or "raw"
+            buffer = value
+        elif key == "blank":
+            if current_event:
+                parsed = _emit(current_event, buffer)
+                if parsed is not None:
+                    yield parsed
+                current_event = None
+                buffer = {}
+
+    # Flush the final buffered event.
+    if current_event and buffer:
+        parsed = _emit(current_event, buffer)
+        if parsed is not None:
+            yield parsed
+
+    st.session_state.stream_active = False
+    st.session_state.stream["done"] = True
+    try:
+        resp.close()
+    except Exception:
+        pass
+    yield ("done", (True,))
+
+
+def _emit(event, payload):
+    """Turn a parsed SSE payload into a (event, tuple) record for the caller."""
+    try:
+        data = json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        # Payload is already plain text (e.g. a token chunk).
+        return (event, (payload,))
+
+    if event == "context":
+        sid = data.get("conversation_id", "")
+        sources = data.get("sources", []) or []
+        confluence = data.get("confluence_links", []) or []
+        st.session_state.stream["conversation_id"] = sid
+        st.session_state.stream["sources"] = sources
+        st.session_state.stream["confluence"] = confluence
+        st.session_state.stream["current"] = True
+        return ("context", (sid, sources, confluence))
+
+    if event == "token":
+        text = data.get("text", "") if isinstance(data, dict) else payload
+        st.session_state.stream["full_text"] += text
+        return ("token", (text,))
+
+    if event == "finished":
+        answer = data.get("answer", "")
+        sources = data.get("sources", []) or []
+        confluence = data.get("confluence_links", []) or []
+        st.session_state.stream["full_text"] = answer
+        st.session_state.stream["sources"] = sources
+        st.session_state.stream["confluence"] = confluence
+        st.session_state.stream["conversation_id"] = data.get(
+            "conversation_id", st.session_state.stream["conversation_id"])
+        if not sources:
+            sources = ["Direct Answer"]
+        return ("finished", (answer, sources, confluence))
+
+    if event == "error":
+        message = data.get("message", "Unknown error") if isinstance(data, dict) else payload
+        st.session_state.stream["error"] = message
+        return ("error", (message,))
+
+    # Unknown event type — pass the raw data through.
+    return (event, (data,))
 
 def reset_selection():
     """Reset domain and sub-category selection."""

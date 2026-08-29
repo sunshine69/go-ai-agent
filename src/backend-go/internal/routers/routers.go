@@ -51,6 +51,7 @@ func (h Handlers) ServeMux() http.Handler {
 
 	domains := newDomainsHandler()
 	messages := newMessagesHandler(h)
+	messagesStream := newMessagesStreamHandler(h)
 	conversations := newConversationsHandler()
 	confluence := newConfluenceHandler(h)
 	documents := newDocumentsHandler(h)
@@ -60,6 +61,7 @@ func (h Handlers) ServeMux() http.Handler {
 
 	mux.HandleFunc("/api/domains", domains.handle)
 	mux.HandleFunc("/api/messages", messages.handle)
+	mux.HandleFunc("/api/messages/stream", messagesStream.handle)
 	mux.HandleFunc("/api/conversations", conversations.handleListAndCreate)
 	mux.HandleFunc("/api/conversations/", conversations.handleByID)
 	mux.HandleFunc("/api/confluence/search", confluence.handleSearch)

@@ -38,7 +38,7 @@ For the hackathon, the scope is deliberately small and achievable:
 │         │ HTTP (FastAPI)                                              │
 │         ▼                                                             │
 │  ┌──────────────────────────────────────────────────────────────────┐ │
-│  │   Backend — FastAPI (routes, ContextBuilder, MCP client, LLM)     ││
+│  │   Backend — (routes, ContextBuilder, MCP client, LLM)     ││
 │  └──────┬───────────────────────────────────────┬───────────────────┘ │
 │         │ MCP Protocol (stdio)                  │ Vector query        │
 │         ▼                                        ▼                    │
@@ -128,17 +128,6 @@ User: "Which pathology request form do I need for this test?"
   - Loading indicators for MCP tool execution
 - **Location:** `src/frontend/app.py`
 
-### 6.2 FastAPI Backend
-
-- **Tech:** FastAPI (Python) + MCP Python SDK + LiteLLM
-- **Features:**
-  - REST API endpoints under `/api/*` (auth, conversations, messages, domains, documents, forms, skills, processes, confluence, rag)
-  - `ContextBuilder` (`app/context_builder.py`) builds domain-aware search terms and queries MCP + RAG
-  - `MCPClientManager` (`app/mcp_client.py`) manages the stdio subprocess lifecycle for the Go MCP server
-  - `get_llm_answer` (`app/routers/messages.py`) calls the configured LLM via LiteLLM (OpenAI-compatible, incl. local servers)
-- **Location:** `src/backend/app/main.py`
-- **Known gaps:** auth tokens are unsigned/unverified and conversations/users are in-memory only (not persisted) — see [copilot-review.md](../copilot-review.md).
-
 ### 6.3 Go MCP Server
 
 - **Tech:** Go + `mark3labs/mcp-go`, single binary (`mcp-server/main.go`), stdio transport by default (streamable HTTP also supported via `-t streamable`)
@@ -158,22 +147,16 @@ User: "Which pathology request form do I need for this test?"
 - **Domains:** HR, Pathology, Radiology, Operations, each with sub-categories (e.g. onboarding, forms, policies, contacts) mapping to keyword lists and a fixed set of MCP tool calls (see `ContextBuilder._get_tools_for_domain`)
 - **Behavior:** no domain selected → global keyword search across all MCP tools + RAG; domain selected → domain keywords added; domain + sub-category selected → sub-category keywords also added
 
-### 6.5 RAG Subsystem
-
-- **Tech:** ChromaDB (SQLite-backed) + `sentence-transformers` (`all-MiniLM-L6-v2`)
-- **Location:** `src/backend/app/rag.py` (store), `src/backend/app/routers/rag.py` (API), `src/backend/app/cli/rag_indexer.py` (offline indexer)
-- **Data:** `resources/rag_documents/<category>/*.{md,pdf}` — see §5 for details
-
 ## 7. Data Flow
 
 ```
 ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│  User    │────▶│ Streamlit│────▶│ FastAPI  │────▶│ Go MCP   │────▶│ MCP      │
+│  User    │────▶│ Streamlit│────▶│  backend-go│────▶│ Go MCP   │────▶│ MCP      │
 │  Question│     │  Chat UI │     │  Server  │     │ Server   │     │ Confluence│
 └──────────┘     └──────────┘     └──────────┘     └──────────┘     └──────────┘
                                                                     │
 ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ▼
-│  Answer  │◀────│ Streamlit│◀────│ FastAPI  │◀────│ Go MCP   │     Local Files
+│  Answer  │◀────│ Streamlit│◀────│ backend-go  │◀────│ Go MCP   │     Local Files
 │  Display │     │  Chat UI │     │  Server  │     │ Server   │     (text tools)
 └──────────┘     └──────────┘     └──────────┘     └──────────┘     └──────────┘
 ```
@@ -193,65 +176,6 @@ User: "Which pathology request form do I need for this test?"
 - No PII stored in chat history
 - All answers include source citations for audit trail
 - **Not yet production-ready:** the `/api/auth` router issues unsigned demo tokens that are never verified on subsequent requests, so all other endpoints are effectively unauthenticated; CORS is `allow_origins=["*"]` with credentials enabled; conversations/users are stored in-memory only. Full findings in [copilot-review.md](../copilot-review.md).
-
-## 10. Hackathon Timeline
-
-### Day 1: Foundation
-- **Morning:** Set up project structure, create sample documents, build Confluence MCP proxy
-- **Afternoon:** Build skills & process MCP proxy, build documents & forms MCP proxy
-
-### Day 2: Integration & Polish
-- **Morning:** Build FastAPI backend, integrate MCP clients
-- **Afternoon:** Build Streamlit UI, polish, test end-to-end
-
-## 11. Sample Use Cases (Hackathon POC)
-
-1. **Pathology Request Forms**
-   - "Which form for a full blood count?" → Returns form name + source link
-   - "Where is the latest blood collection procedure?" → Returns procedure with source
-
-2. **Onboarding**
-   - "How do I onboard a new site?" → Returns step-by-step process + source
-   - "Who owns the lab services process?" → Returns owner info + source
-
-3. **Procedures**
-   - "Where is the procedure for X?" → Returns procedure with source link
-   - "How do I complete request Y?" → Returns step-by-step with source
-
-## 12. Sample Confluence Space/Content Mapping
-
-For the hackathon POC, we will connect to a small set of approved Confluence spaces:
-
-- **Lab Operations Space** — Pathology forms, collection procedures
-- **People Space** — Onboarding, skills directory
-- **Quality Space** — Quality procedures, SOPs
-- **IT Support Space** — FAQ documents, IT processes
-
-## 13. Sample Skills & Process Data
-
-The skills and process MCP will reference local JSON files mapping:
-- Skill categories → descriptions
-- Process IDs → step-by-step instructions
-- Process owners → contact info
-
-## 14. Local Resources (Hackathon POC)
-
-For the hackathon, we simulate Confluence/SharePoint with local files:
-
-```
-resources/
-├── documents/
-│   ├── confluence/        — Saved Confluence page exports
-│   ├── skills/            — Skills directory (JSON)
-│   ├── procedures/        — Procedure documents
-│   ├── forms/             — Request form templates
-│   └── faq/               — FAQ documents
-└── rag_documents/         — Unstructured PDF/MD indexed into ChromaDB (see §5, §6.5)
-    ├── policy/            — populated today
-    ├── procedure/         — supported, not yet populated
-    ├── training/          — supported, not yet populated
-    └── reference/         — supported, not yet populated
-```
 
 ## 15. Environment Variables
 

@@ -205,6 +205,9 @@ func (s *RAGStore) Search(ctx context.Context, query string, limit int, category
 	if err != nil {
 		return nil, fmt.Errorf("embed query: %w", err)
 	}
+	if len(embeddings) == 0 {
+		return nil, errors.New("embed query returned no vectors")
+	}
 	queryBlob := serializeFloat32(embeddings[0])
 	fmt.Printf("[DBG-RAG] Search: dim=%d k=%d threshold=%.4f query=%q category=%q embedderDim=%d\n",
 		len(embeddings[0]), limit*4, s.cfg.ScoreThreshold, query, category, s.embedder.Dimensions())
