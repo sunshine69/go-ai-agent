@@ -61,7 +61,8 @@ func (h Handlers) ServeMux() http.Handler {
 
 	mux.HandleFunc("/api/domains", domains.handle)
 	mux.HandleFunc("/api/messages", messages.handle)
-	mux.HandleFunc("/api/messages/stream", messagesStream.handle)
+	mux.HandleFunc("/api/messages/stream", messagesStream.proxyLLMStream) // Direct proxy to LLM
+	mux.HandleFunc("/api/chat/stream", messagesStream.handleStreamChat)   // Alternative SSE format endpoint
 	mux.HandleFunc("/api/conversations", conversations.handleListAndCreate)
 	mux.HandleFunc("/api/conversations/", conversations.handleByID)
 	mux.HandleFunc("/api/confluence/search", confluence.handleSearch)
