@@ -1,11 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import "./style.css";
 import { Markdown } from "./components/Markdown";
-
-// Base URL for the AI backend, read from the .env file (VITE_BACKEND_URL).
-// Mirrors the pattern used in hooks/useApi.ts so all API calls resolve to the
-// configured backend location instead of a hard-coded localhost address.
-const API_BASE = `${import.meta.env.VITE_BACKEND_URL || "http://localhost:8000"}/api`;
+import { useApi } from "./hooks/useApi";
 
 // Types matching backend API response shape
 interface SubCategory {
@@ -34,287 +30,252 @@ interface Message {
 
 // Main App component - complete layout matching Streamlit UI
 export default function App() {
+  // Wire to the SPA-parity API client. This replaces the old blocking
+  // /messages fetch with SSE streaming at /api/messages/stream, exactly like
+  // the SPA (see src/frontend/spa/src/App.tsx).
+  const {
+    domains,
+    conversations,
+    activeId,
+    setActiveId,
+    streaming,
+    abort,
+    streamMessage,
+    reset,
+    refreshConversations,
+    createConversation,
+    loadConversation,
+    deleteConversation,
+    clearConversations,
+    loadDomains,
+  } = useApi();
+
   const [selectedDomain, setSelectedDomain] = useState<Domain | null>(null);
   const [subCategoryKey, setSubCategoryKey] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  
-  // State for conversations data (domains + list)
-  const [conversationsData, setConversationsData] = useState({
-    domains: [] as Domain[],
-    list: [] as Array<{ id: string; title: string }>
-  });
 
-  // --- Conversation history state -----------------------------------------
-  // Id of the active conversation. Empty string => no active conversation yet
-  // (the user is still on domain selection). A real id means the messages array
-  // below is a live mirror of what the backend has persisted for that turn.
-  const [conversationId, setConversationId] = useState<string>("");
-  // Loading state
-  const [isLoading, setIsLoading] = useState(false);
+  // Ref to hold latest streaming state (fixes closure bug)
+  const streamingStateRef = useRef(streaming);
+  streamingStateRef.current = streaming;
 
-  // Abort controller for stopping an in-flight generation (Streamlit "stop" button)
-  const abortRef = React.useRef<AbortController | null>(null);
+  // Ref to track when a new streaming session has started.
+  // This lets the completion effect know if a real session ended.
+  const streamingStartedRef = useRef(false);
 
-  // Load domains + conversation list on startup
-  React.useEffect(() => {
-    if (conversationsData.domains.length === 0) {
-      fetch(API_BASE + '/domains')
-        .then(res => res.json())
-        .then(data => {
-          setConversationsData(prev => ({
-            domains: data.domains || [],
-            list: prev.list
-          }));
-        })
-        .catch(() => {});
-    }
-  }, [conversationsData.domains.length]);
+  // Auto-scroll chat to the bottom whenever messages or streaming chunk change.
+  const chatHistoryRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [inputValue, setInputValue] = useState('');
 
-  React.useEffect(() => {
-    fetch(API_BASE + '/conversations')
-      .then(res => res.json())
-      .then(data => setConversationsData(prev => ({
-        domains: prev.domains,
-        list: Array.isArray(data) ? data : []
-      })))
-      .catch(() => {});
+  // --- Fetch domains on mount (mirrors SPA mount effect) ---
+  useEffect(() => {
+    loadDomains();
   }, []);
 
-  // Handle domain selection
+  // --- Fetch conversations on mount (mirrors SPA mount effect) ---
+  useEffect(() => {
+    refreshConversations();
+  }, []);
+
+  useEffect(() => {
+    if (chatHistoryRef.current) {
+      chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight;
+    }
+  }, [messages, streamingStateRef.current.currentChunk]);
+
+  // Focus the input when streaming finishes (mirrors SPA).
+  useEffect(() => {
+    if (!streamingStateRef.current.isStreaming && inputRef.current && inputValue) {
+      inputRef.current.focus();
+    }
+  }, [streamingStateRef.current.isStreaming, inputValue]);
+
+  // Listen for streaming completion: append the accumulated answer (or error)
+  // to the message list so the selected conversation is mirrored.
+  useEffect(() => {
+    if (!streamingStartedRef.current) return;
+    if (streaming.isStreaming) return;
+
+    streamingStartedRef.current = false;
+    const latest = streamingStateRef.current;
+
+    if (latest.conversationId) setActiveId(latest.conversationId);
+
+    if (latest.fullAnswer) {
+      const assistantMessage: Message = {
+        role: 'assistant',
+        content: latest.fullAnswer,
+        confluence_links: latest.citations || [],
+        rag_sources: latest.sources || [],
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+      refreshConversations();
+    } else if (latest.error) {
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: latest.error ?? '', error: 'streaming_error' },
+      ]);
+    }
+  }, [streaming.isStreaming]);
+
+  // --- Handlers --------------------------------------------------------
+
+  const handleNewConversation = async () => {
+    await createConversation();
+    setSelectedDomain(null);
+    setSubCategoryKey(null);
+    setActiveId('');
+    setMessages([]);
+    reset();
+    streamingStartedRef.current = false;
+    refreshConversations();
+  };
+
   const handleDomainSelection = (domain: Domain) => {
     setSelectedDomain(domain);
-    
-    // Reset sub-category key when selecting a new domain
     setSubCategoryKey(null);
-    
-    // Simulate assistant response like the Streamlit version does. This is a
-    // display-only intro — tagged synthetic so it is excluded from the history
-    // payload sent to the LLM on the next request.
-    setMessages(prev => [
+    setMessages((prev) => [
       ...prev,
-      { 
-        role: 'assistant', 
+      {
+        role: 'assistant',
         synthetic: true,
-        content: `Great! I'm ready to help with ${domain.display_name}. What would you like to know?` 
-      }
+        content: `Great! I'm ready to help with ${domain.display_name}. What would you like to know?`,
+      },
     ]);
   };
 
-  // New conversation handler - reset everything and start fresh
-  const handleNewConversation = () => {
-    setSelectedDomain(null);
-    setSubCategoryKey(null);
-    setMessages([]);
-    setConversationId("");
-    // keep the sidebar conversation list in sync (the one just deleted is gone)
-    setConversationsData(prev => ({
-      domains: prev.domains,
-      list: prev.list.filter(c => c.id !== conversationId)
-    }));
+  const handleSubCategorySelection = (domain: Domain, key: string) => {
+    setSelectedDomain(domain);
+    setSubCategoryKey(key);
+    const subCat = domain.sub_categories?.[key];
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: 'assistant',
+        synthetic: true,
+        content: `Perfect! Let me help you with ${subCat?.display_name || key}. What would you like to know?`,
+      },
+    ]);
   };
 
-  // Load an existing conversation into the chat pane
-  const handleConversationSelect = (id: string) => {
-    fetch(`${API_BASE}/conversations/${id}`)
-      .then(res => res.json())
-      .then(data => {
-        const messages = (data.messages || [])
-          .filter((m: any) => m.role !== "user")
-          .map((m: any) => ({
-            role: m.role,
-            content: m.content,
-          }));
-        setMessages(messages);
-        setConversationId(id);
-      })
-      .catch(() => {});
-  };
-
-  // Refresh the sidebar conversation list
-  const refreshConversationList = () => {
-    fetch(API_BASE + '/conversations')
-      .then(res => res.json())
-      .then(data => setConversationsData(prev => ({
-        domains: prev.domains,
-        list: Array.isArray(data) ? data : []
-      })))
-      .catch(() => {});
-  };
-
-  // Delete a single conversation from the backend + sidebar list
-  const handleConversationDelete = (id: string) => {
-    fetch(`${API_BASE}/conversations/${id}`, { method: 'DELETE' })
-      .then(refreshConversationList)
-      .catch(() => {});
-    if (id === conversationId) {
-      setMessages([]);
-      setConversationId("");
-    }
-  };
-
-  // Delete every conversation in one shot
-  const handleClearAllConversations = () => {
-    fetch(API_BASE + '/conversations', { method: 'DELETE' })
-      .then(refreshConversationList)
-      .catch(() => {});
-    setMessages([]);
-    setConversationId("");
-  };
-
-  // Change selection button clicked (go back to domain selection)
   const handleChangeSelection = () => {
     setSelectedDomain(null);
     setSubCategoryKey(null);
   };
-  
-  // Handle sub-category selection
-  const handleSubCategorySelection = (domain: Domain, key: string) => {
-    setSelectedDomain(domain);
-    setSubCategoryKey(key);
-    
-    // Simulate assistant response like the Streamlit version does
-    setMessages(prev => [
-      ...prev,
-      { 
-        role: 'assistant', 
-        content: `Perfect! Let me help you with ${domain.sub_categories?.[key]?.display_name || key}. What would you like to know?` 
-      }
-    ]);
-  };
 
-  // Quick action - jump directly to a domain
   const handleQuickAction = (domain: Domain) => {
     setSelectedDomain(domain);
     setSubCategoryKey(null);
     setMessages([]);
   };
 
-  // Handle sending message to backend API
-  const handleSendMessage = async (message: string) => {
-    // Build the prior-turn history that the backend needs to remember context.
-    // Skip synthetic intro messages (domain selection) and the optimistic user
-    // turn just pushed below. Each history entry mirrors the backend's stored
-    // turns so the next request can reconstruct the same context.
+  const handleConversationSelect = async (id: string) => {
+    setActiveId(id);
+    // Load stored messages so the selected conversation actually renders
+    // (mirrors the SPA's handleConversationSelect).
+    const data = await loadConversation(id);
+    const msgs = (Array.isArray(data) ? data : [])
+      .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+      .map((m: any) => ({
+        role: m.role,
+        content: m.content,
+      }));
+    setMessages(msgs);
+  };
+
+  const handleConversationDelete = async (id: string) => {
+    await deleteConversation(id);
+    if (id === activeId) {
+      setMessages([]);
+    }
+    refreshConversations();
+  };
+
+  const handleClearAllConversations = async () => {
+    await clearConversations();
+    setMessages([]);
+    setActiveId('');
+  };
+
+  const handleStop = () => {
+    abort();
+    streamingStartedRef.current = false;
+    setMessages((prev) => [
+      ...prev,
+      { role: 'assistant', content: '⏹ Generation stopped.', error: 'stopped' },
+    ]);
+  };
+
+
+  const handleSend = async (text: string) => {
+    if (!text.trim()) return;
+
+    // Optimistic UI: show the user's message immediately.
+    setMessages((prev) => [...prev, { role: 'user', content: text }]);
+    setInputValue('');
+
+    // Build history for cross-turn context (exclude synthetic + the optimistic user turn)
     const history = messages
-      .filter((m) => !m.synthetic && m.role !== 'user')
+      .filter((m) => !m.synthetic && m.role === 'assistant')
       .map((m) => ({ role: m.role, content: m.content }));
 
-    // Build the request payload. conversation_id "" => backend creates a new
-    // conversation; a real id => append to that conversation (cross-turn memory).
-    const data: {
-      message: string;
-      conversation_id: string;
-      history?: any[];
-      domain?: string;
-      sub_category?: string;
-    } = { message, conversation_id: conversationId, history };
-
-    if (selectedDomain?.key) {
-      data.domain = selectedDomain.key;
-
-      // Get display name of current sub-category
-      const subCategoryInfo = selectedDomain.sub_categories?.[subCategoryKey || ''];
-      if (subCategoryInfo && subCategoryInfo.display_name) {
-        data.sub_category = subCategoryInfo.display_name;
-      }
+    // Determine sub-category for the request
+    let subCategoryValue: string | undefined;
+    if (selectedDomain?.key && subCategoryKey) {
+      const subCat = selectedDomain.sub_categories?.[subCategoryKey];
+      subCategoryValue = subCat?.display_name || subCategoryKey;
     }
 
-    // Optimistically show the user's message immediately (before the model responds)
-    setMessages(prev => [
-      ...prev,
-      { role: 'user', content: message }
-    ]);
+    // Build the request payload. conversation_id "" => new conversation;
+    // a real id => append to that conversation (cross-turn memory).
+    const payload: Parameters<typeof streamMessage>[0] = {
+      message: text,
+      conversation_id: activeId,
+      history,
+    };
+    if (selectedDomain?.key) payload.domain = selectedDomain.key;
+    if (subCategoryValue) payload.sub_category = subCategoryValue;
 
-    setIsLoading(true);
+    // Mark that we started streaming so the completion effect can detect it.
+    streamingStartedRef.current = true;
 
-    const controller = new AbortController();
-    abortRef.current = controller;
+    // Start streaming — do not await completion; the useEffect handles it.
+    streamMessage(payload).catch(() => {});
+  };
 
-    try {
-      const response = await fetch(API_BASE + '/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(data),
-        signal: controller.signal
-      });
-
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-      const result = await response.json();
-
-      // Capture (or create) the conversation id from the backend response so
-      // subsequent turns stay in the same context.
-      if (result.conversation_id) {
-        setConversationId(result.conversation_id);
-      }
-
-      setMessages(prev => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: result.answer || '',
-          confluence_links: result.confluence_links || [],
-          rag_sources: result.sources || []
-        }
-      ]);
-
-      // Refresh the sidebar list so new conversations appear
-      fetch(API_BASE + '/conversations')
-        .then(res => res.json())
-        .then(data => setConversationsData(prev => ({
-          domains: prev.domains,
-          list: Array.isArray(data) ? data : []
-        })))
-        .catch(() => {});
-
-    } catch (error) {
-      // Ignore the abort (stop) signal — a clean "stopped" note is shown below
-      if ((error as DOMException).name === 'AbortError') {
-        setMessages(prev => [
-          ...prev,
-          {
-            role: 'assistant',
-            content: '⏹ Generation stopped.',
-            error: 'stopped'
-          }
-        ]);
-      } else {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        
-        setMessages(prev => [
-          ...prev,
-          { 
-            role: 'assistant', 
-            content: `Error: ${errorMessage}`,
-            error: errorMessage
-          }
-        ]);
-      }
-    } finally {
-      setIsLoading(false);
-      abortRef.current = null;
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (inputValue.trim() && !streaming.isStreaming) {
+      handleSend(inputValue.trim());
     }
   };
 
-  // Stop an in-flight generation (Streamlit "stop" button)
-  const handleStop = () => {
-    abortRef.current?.abort();
-  };
+  // Determine placeholder and scope label (mirrors the SPA logic).
+  let placeholder = 'Ask me anything...';
+  let scopeLabel = '';
+  if (selectedDomain) {
+    const domainName = selectedDomain.display_name;
+    if (subCategoryKey) {
+      const subCat = selectedDomain.sub_categories?.[subCategoryKey];
+      placeholder = `Ask about ${domainName} > ${subCat?.display_name || subCategoryKey}...`;
+      scopeLabel = `${selectedDomain.icon} ${domainName} > ${subCat?.display_name || subCategoryKey}`;
+    } else {
+      placeholder = `Ask about ${domainName}...`;
+    }
+  }
 
-  // Get current sub-category info - handle undefined case properly with fallback
-  const selectedDomainInfo = conversationsData.domains.find(d => d.key === selectedDomain?.key);
+  // Determine sub-category info for pill selection fallback.
+  const selectedDomainInfo = domains.find((d) => d.key === selectedDomain?.key);
 
   return (
     <div className="app-container">
       {/* Sidebar - always visible */}
-      <Sidebar 
+      <Sidebar
         selectedDomain={selectedDomain}
         subCategoryKey={subCategoryKey}
         conversations={{
-          domains: conversationsData.domains,
-          list: conversationsData.list
+          domains,
+          list: conversations.map((c) => ({ id: c.id, title: c.title })),
         }}
         onNewConversation={handleNewConversation}
         onChangeSelection={handleChangeSelection}
@@ -322,36 +283,124 @@ export default function App() {
         onConversationSelect={handleConversationSelect}
         onConversationDelete={handleConversationDelete}
         onClearAllConversations={handleClearAllConversations}
-        activeConversationId={conversationId}
+        activeConversationId={activeId}
       />
 
       {/* Main content */}
       <main className="main-content">
-        {!selectedDomain ? (
+        {!selectedDomain && domains.length > 0 ? (
           // Domain pills when no domain selected
-          <DomainPills 
-            domains={conversationsData.domains} 
-            onSelection={handleDomainSelection}
-          />
-        ) : Object.keys(selectedDomainInfo?.sub_categories || {}).length > 0 && !subCategoryKey ? (
+          <DomainPills domains={domains} onSelection={handleDomainSelection} />
+        ) : (selectedDomainInfo?.sub_categories &&
+            Object.keys(selectedDomainInfo.sub_categories).length > 0 &&
+            !subCategoryKey) ? (
           // Sub-category pills after domain selection
           <SubCategoryPills
-            domainName={selectedDomain.display_name}
-            subCategories={selectedDomainInfo?.sub_categories || {}}
+            domainName={selectedDomain?.display_name ?? ''}
+            subCategories={selectedDomainInfo.sub_categories || {}}
             onBack={handleChangeSelection}
             onSelect={handleSubCategorySelection}
           />
         ) : null}
 
-        {/* Chat input always visible */}
-        <ChatInput 
-          messages={messages}
-          selectedDomain={selectedDomain}
-          subCategoryKey={subCategoryKey}
-          onSendMessage={handleSendMessage}
-          onStop={handleStop}
-          isLoading={isLoading}
-        />
+        {/* Chat area: message history + streaming + input */}
+        <div className="chat-area">
+          {scopeLabel && (
+            <div className="chat-scope-label">{scopeLabel}</div>
+          )}
+
+          <div ref={chatHistoryRef} className="chat-history">
+            {messages.map((msg, idx) => {
+              if (msg.synthetic) return null;
+              const isLatest = idx === messages.length - 1;
+              const hasStreamingContent =
+                streaming.isStreaming && streaming.fullAnswer.length > 0;
+              const isStreamingMsg =
+                isLatest && hasStreamingContent && msg.role === 'assistant';
+              return (
+                <div key={`${msg.role}-${idx}`} className={`message ${msg.role}`}>
+                  <div className="bubble"><Markdown content={msg.content} /></div>
+                  {msg.error && <div className="error-message">{msg.error}</div>}
+                  {msg.rag_sources && msg.rag_sources.length > 0 && (
+                    <details className="rag-sources">
+                      <summary>RAG document sources ({msg.rag_sources.length})</summary>
+                      <ul>
+                        {msg.rag_sources.map((src, sidx) => (
+                          <li key={sidx}>{src}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                  {msg.confluence_links && msg.confluence_links.length > 0 && (
+                    <details className="confluence-links">
+                      <summary>Confluence sources ({msg.confluence_links.length})</summary>
+                      <ul>
+                        {msg.confluence_links.map((link, lidx) => (
+                          <li key={lidx}>
+                            <a href={link.url} target="_blank" rel="noopener noreferrer">
+                              {link.title}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                  {/* Live streaming content rendered inline while streaming */}
+                  {isStreamingMsg && (
+                    <div className="bubble">
+                      <Markdown content={streaming.fullAnswer} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Empty state */}
+            {messages.filter((m) => !m.synthetic).length === 0 &&
+              !streaming.isStreaming && (
+                <div className="chat-empty">
+                  <div className="chat-empty-icon">🤖</div>
+                  <div className="chat-empty-text">
+                    Select a domain to get started, or ask me anything!
+                  </div>
+                </div>
+              )}
+          </div>
+
+          {/* Input area */}
+          <div className="chat-input-area">
+            <form className="chat-input-form" onSubmit={handleSubmit}>
+              <input
+                ref={inputRef}
+                className="chat-input-field"
+                type="text"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                placeholder={placeholder}
+                disabled={streaming.isStreaming}
+                autoComplete="off"
+              />
+              {streaming.isStreaming ? (
+                <button
+                  className="chat-input-stop"
+                  onClick={handleStop}
+                  type="button"
+                  title="Stop generation"
+                >
+                  <span aria-hidden>⏹</span>
+                </button>
+              ) : (
+                <button
+                  className="chat-input-send"
+                  disabled={!inputValue.trim()}
+                  type="submit"
+                >
+                  <span aria-hidden>→</span>
+                </button>
+              )}
+            </form>
+          </div>
+        </div>
       </main>
     </div>
   );
@@ -576,143 +625,3 @@ const SubCategoryPills = ({
   );
 };
 
-// Chat input component - matching Streamlit chat_input style
-const ChatInput = ({ 
-  messages, 
-  selectedDomain,
-  subCategoryKey,
-  onSendMessage,
-  onStop,
-  isLoading 
-}: { 
-  messages: Message[];
-  selectedDomain?: Domain | null;
-  subCategoryKey?: string | null;
-  onSendMessage: (msg: string) => void;
-  onStop?: () => void;
-  isLoading: boolean;
-}) => {
-  const [inputValue, setInputValue] = useState('');
-
-  // Determine placeholder text based on scope
-  let placeholder = "Ask me anything...";
-  
-  if (selectedDomain) {
-    const domainName = selectedDomain.display_name;
-    
-    // Get sub-category label if available
-    const subCategoryInfo = selectedDomain.sub_categories?.[subCategoryKey || ''];
-    let subCategoryLabel = "";
-    if (subCategoryInfo && subCategoryInfo.display_name) {
-      subCategoryLabel = ` > ${subCategoryInfo.display_name}`;
-    }
-    
-    placeholder = `Ask about ${domainName}${subCategoryLabel}...`;
-  }
-
-  // Show domain label only when both domain and sub-category are selected
-  const showLabel = !!selectedDomain && !!subCategoryKey;
-
-  return (
-    <div className="chat-container">
-      {showLabel ? (
-        <div className="domain-label">
-          <strong className="domain-label-text">
-            {selectedDomain?.icon} {selectedDomain.display_name}
-            {' > '}<strong>{subCategoryKey || ''}</strong>
-          </strong>
-        </div>
-      ) : null}
-
-      {/* Stop generation button (top-right, shown while answering) */}
-      {isLoading && onStop ? (
-        <button
-          onClick={onStop}
-          className="stop-generation-btn"
-          title="Stop generation"
-        >
-          <svg className="stop-icon" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <rect x="2.5" y="2.5" width="11" height="11" rx="2.5" />
-          </svg>
-          <span className="stop-label">Stop</span>
-        </button>
-      ) : null}
-
-      {/* Chat history */}
-      <div className="chat-history">
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`message ${msg.role}`}>
-            <div className="bubble"><Markdown content={msg.content} /></div>
-            
-            {/* Error message if any */}
-            {msg.error && (
-              <div className="error-message">⚠️ {msg.error}</div>
-            )}
-            
-            {/* RAG sources (simplified for now - expandable not implemented yet) */}
-            {msg.rag_sources && msg.rag_sources.length > 0 && (
-              <details className="rag-sources">
-                <summary>RAG document sources ({msg.rag_sources.length})</summary>
-                <ul>
-                  {msg.rag_sources.map((src, sidx) => (
-                    <li key={sidx}>{src}</li>
-                  ))}
-                </ul>
-              </details>
-            )}
-
-            {/* Confluence links */}
-            {msg.confluence_links && msg.confluence_links.length > 0 && (
-              <details className="confluence-links">
-                <summary>Confluence sources ({msg.confluence_links.length})</summary>
-                <ul>
-                  {msg.confluence_links.map((link, lidx) => (
-                    <li key={lidx}>
-                      <a href={link.url} target="_blank" rel="noopener noreferrer">
-                        {link.title}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </details>
-            )}
-
-            {/* Contribute button (simplified - would link to form URL) */}
-            {msg.role === 'assistant' && !msg.error && (
-              <button className="btn-contribute">⚠️ Missing information or not what you expected? Please contribute</button>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {/* Chat input at the bottom */}
-      <form 
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (inputValue.trim() && !isLoading) {
-            onSendMessage(inputValue);
-            setInputValue('');
-          }
-        }}
-        className="chat-input-form"
-      >
-        <input
-          type="text"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          placeholder={placeholder}
-          disabled={isLoading}
-          autoFocus={!isLoading}
-          className="chat-input-field"
-        />
-        <button 
-          type="submit" 
-          disabled={!inputValue.trim() || isLoading}
-          className="send-button"
-        >
-          Send
-        </button>
-      </form>
-    </div>
-  );
-};

@@ -422,6 +422,21 @@ html, body {
 
 .domain-label strong {
   color: #818cf8;
+
+.scope-label {
+  padding: 12px 24px;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+  font-size: 0.9rem;
+  color: #6366f1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.scope-label-text {
+  font-weight: 600;
+}
 }
 
 .chat-history {
@@ -742,4 +757,16 @@ html, body {
 /* ========== Details summary marker (non-webkit) ========== */
 details summary::-webkit-details-marker {
   display: none;
+}
+
+/* Blinking cursor for live streaming output (mirrors SPA) */
+.streaming-cursor {
+  animation: blink 1s infinite;
+  color: #22c55e;
+  font-weight: 600;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
 }
