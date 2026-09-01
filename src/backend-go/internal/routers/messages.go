@@ -137,9 +137,9 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 	// --- Persist the current turn -----------------------------------------
 	// The assistant answer is persisted separately from the user turn.
 	if answer != "" {
-		appendMessage(convID, "assistant", answer, "")
+		appendMessage(convID, "assistant", answer, "", sources, confluenceLinks)
 	}
-	appendMessage(convID, "user", msg, userKey)
+	appendMessage(convID, "user", msg, userKey, sources, confluenceLinks)
 
 	// --- Return the response ------------------------------------------------
 	srcs := sources

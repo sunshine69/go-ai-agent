@@ -15,7 +15,7 @@ import (
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
 )
 
-// messageStreamHandler exposes POST /api/messages/stream and proxyLLMStream, 
+// messageStreamHandler exposes POST /api/messages/stream and proxyLLMStream,
 // endpoints that stream LLM answers to the client token-by-token.
 type messageStreamHandler struct {
 	h Handlers
@@ -48,6 +48,71 @@ func writeSSEError(w http.ResponseWriter, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+// persistStreamUserTurn persists the user turn that started the current
+// streaming response. Tagging it with the current-turn key mirrors the non
+// streaming path (messages.go) so the next turn's history replay excludes it.
+func persistStreamUserTurn(convID, msg string) {
+	if convID == "" || msg == "" {
+		return
+	}
+	userKey := "__current_user__:" + msg
+	appendMessage(convID, "user", msg, userKey, nil, nil)
+}
+
+// persistStreamResponse persists the assistant reply for the current streaming
+// response. It extracts the text the same way the SPA (useStreaming) does from
+// an OpenAI-style message event so the stored content matches what the client
+// displays.
+func persistStreamResponse(convID string, content string) {
+	if convID == "" || content == "" {
+		return
+	}
+	appendMessage(convID, "assistant", content, "", nil, nil)
+}
+
+// clientExtractedContent pulls the text chunk out of an incoming "message"
+// event payload using the same precedence the SPA (useStreaming) applies: the
+// {content: "..."} form (from /api/chat/stream) takes priority over the
+// OpenAI-style {choices:[{delta:{content}}]} form.
+func clientExtractedContent(payload string) string {
+	trimmed := strings.TrimSpace(payload)
+	if trimmed == "" {
+		return ""
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+		// Not JSON: this is a plain-text token payload; return it as-is.
+		return trimmed
+	}
+
+	if raw, ok := obj["content"]; ok {
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+			return s
+		}
+	}
+
+	if choices, ok := obj["choices"]; ok {
+		var arr []map[string]json.RawMessage
+		if err := json.Unmarshal(choices, &arr); err == nil && len(arr) > 0 {
+			if delta, ok := arr[0]["delta"]; ok {
+				var d map[string]json.RawMessage
+				if err := json.Unmarshal(delta, &d); err == nil {
+					if raw, ok := d["content"]; ok {
+						var s string
+						if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+							return s
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 // streamChatRequest represents the payload for streaming chat requests.
@@ -88,6 +153,9 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		newConv := createNewConversation()
 		convID = newConv.ID
 	}
+
+	// Persist the user turn that started this streaming response.
+	persistStreamUserTurn(convID, msg)
 
 	// Build context using ContextBuilder (MCP + RAG)
 	builder := ctxpkg.New(m.h.Cfg, m.h.Manager, m.h.Rag)
@@ -182,7 +250,7 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	llamaReq, err := http.NewRequestWithContext(ctx, "POST", 
+	llamaReq, err := http.NewRequestWithContext(ctx, "POST",
 		m.h.Cfg.LLMBASEURL+"/chat/completions?stream=true",
 		bytes.NewBuffer(data))
 	if err != nil {
@@ -206,6 +274,7 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 	rc := http.NewResponseController(w)
 
 	scanner := bufio.NewScanner(llamaResp.Body)
+	var accContent string
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 4*1024*1024)
 
@@ -223,12 +292,16 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 			continue
 		}
 
+		// Accumulate the streamed content for persistence
+		if chunk := clientExtractedContent(payload); chunk != "" {
+			accContent += chunk
+		}
 		// Send token as SSE event
 		eventData := fmt.Sprintf("{\"content\":\"%s\"}", escapeSSE(payload))
 		if _, err := w.Write([]byte("event: message\ndata: " + eventData + "\n\n")); err != nil {
 			return
 		}
-		
+
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -239,7 +312,7 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 		log.Printf("stream reader error: %v", scanner.Err())
 		errorData := fmt.Sprintf("{\"error\":\"%s\"}", escapeSSE(scanner.Err().Error()))
 		w.Write([]byte("event: error\ndata: " + errorData + "\n\n"))
-		
+
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -250,7 +323,8 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 	responseData := fmt.Sprintf(
 		"\"conversation_id\":\"%s\",\"sources\":%v,\"citations\":%v",
 		convID, formatSourcesForSSE(sources), formatCitationsForSSE(citations))
-	
+
+	persistStreamResponse(convID, accContent)
 	w.Write([]byte("event: done\ndata: {" + responseData + "}\n\n"))
 
 	if f, ok := w.(http.Flusher); ok {
@@ -290,6 +364,9 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		newConv := createNewConversation()
 		convID = newConv.ID
 	}
+
+	// Persist the user turn that started this streaming response.
+	persistStreamUserTurn(convID, msg)
 
 	// Build context using ContextBuilder (MCP + RAG)
 	builder := ctxpkg.New(m.h.Cfg, m.h.Manager, m.h.Rag)
@@ -369,7 +446,7 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	llamaReq, err := http.NewRequestWithContext(ctx, "POST", 
+	llamaReq, err := http.NewRequestWithContext(ctx, "POST",
 		m.h.Cfg.LLMBASEURL+"/chat/completions?stream=true",
 		bytes.NewBuffer(data))
 	if err != nil {
@@ -404,6 +481,7 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 	rc := http.NewResponseController(w)
 
 	scanner := bufio.NewScanner(llamaResp.Body)
+	var accContent string
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 4*1024*1024)
 
@@ -421,11 +499,15 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 			continue
 		}
 
+		// Accumulate the streamed content for persistence
+		if chunk := clientExtractedContent(payload); chunk != "" {
+			accContent += chunk
+		}
 		// Relay the chunk directly to client (minimal transformation)
 		if _, err := w.Write([]byte("event: message\ndata: " + payload + "\n\n")); err != nil {
 			return
 		}
-		
+
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -436,7 +518,7 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 		log.Printf("stream reader error: %v", scanner.Err())
 		errorData := fmt.Sprintf("{\"error\":\"%s\"}", escapeSSE(scanner.Err().Error()))
 		w.Write([]byte("event: error\ndata: " + errorData + "\n\n"))
-		
+
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -447,9 +529,10 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 	responseData := fmt.Sprintf(
 		"\"conversation_id\":\"%s\",\"sources\": %v,\"citations\": %v",
 		convID, formatSourcesForSSE(sources), formatCitationsForSSE(citations))
-	
+
+	persistStreamResponse(convID, accContent)
 	w.Write([]byte("event: done\ndata: {" + responseData + "}\n\n"))
-	
+
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}

@@ -18,11 +18,12 @@ type conversation struct {
 	UpdatedAt string    `json:"updated_at"`
 	Messages  []message `json:"messages"`
 }
-
 type message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Key     string `json:"key,omitempty"`
+	Role            string           `json:"role"`
+	Content         string           `json:"content"`
+	Key             string           `json:"key,omitempty"`
+	Sources         []string         `json:"sources,omitempty"`
+	ConfluenceLinks []confluenceLink `json:"confluence_links,omitempty"`
 }
 
 var (
@@ -240,7 +241,7 @@ func getConversation(id string) *conversation {
 // appendMessage persists a single turn (user/assistant) to a conversation,
 // tagging the user turn with a sentinel key so the backend can exclude it from
 // the next turn's history replay (mirrors the Python backend).
-func appendMessage(id, role, content, key string) {
+func appendMessage(id, role, content, key string, sources []string, confluenceLinks []confluenceLink) {
 	convMu.Lock()
 	defer convMu.Unlock()
 
@@ -249,9 +250,11 @@ func appendMessage(id, role, content, key string) {
 		return
 	}
 	c.Messages = append(c.Messages, message{
-		Role:    role,
-		Content: content,
-		Key:     key,
+		Role:            role,
+		Content:         content,
+		Key:             key,
+		Sources:         sources,
+		ConfluenceLinks: confluenceLinks,
 	})
 	// Mirror the Python backend: seed a readable title from the first user
 	// message instead of leaving the generic "New Conversation" label.
