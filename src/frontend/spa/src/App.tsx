@@ -8,7 +8,7 @@ import { ChatArea } from "./components/ChatArea";
 
 // Base URL for the AI backend — read from .env file
 const API_BASE =
-  (import.meta.env.VITE_BACKEND_URL as string) || "http://localhost:8000";
+  (import.meta.env.VITE_BACKEND_URL as string) || "";
 
 interface Conversation {
   id: string;

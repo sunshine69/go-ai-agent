@@ -18,6 +18,7 @@ import (
 	"github.com/stevek/go-ai-agent/backend-go/internal/mcpclient"
 	"github.com/stevek/go-ai-agent/backend-go/internal/ragstore"
 	"github.com/stevek/go-ai-agent/backend-go/internal/routers"
+	"github.com/stevek/go-ai-agent/backend-go/internal/serving"
 )
 
 func main() {
@@ -27,7 +28,31 @@ func main() {
 	}
 
 	println("[DEBUG] envDotPAth: " + envDotPath)
+
+	// Resolve the SPA serving path: the optional second CLI argument
+	// (os.Args[1] is the .env path), falling back to the FRONTEND_PATH env var.
+	// Passing "" lets serving.New use FRONTEND_PATH, which is then resolved
+	// relative to the current working directory.
+	frontendArg := ""
+	if len(os.Args) > 2 {
+		frontendArg = os.Args[2]
+	}
+
+	// Load the .env FIRST. config.Load injects FRONTEND_PATH (and every other
+	// config key) into the process environment. serving.New reads FRONTEND_PATH
+	// from os.Getenv, so it must run AFTER config.Load — otherwise the .env
+	// value is invisible to it (which is exactly why .env previously seemed
+	// "ignored" while env=FRONTEND_PATH=... worked: a real process env var is
+	// present before any Go code runs).
 	cfg := config.Load(envDotPath)
+
+	frontend := serving.New(frontendArg)
+	frontendEnabled := frontend.Enabled()
+	if frontendEnabled {
+		fmt.Printf("[server] serving SPA from %s at %s\n", frontend.Root(), serving.Prefix)
+	} else {
+		fmt.Println("[server] SPA disabled (set FRONTEND_PATH env or pass a path as the second CLI arg)")
+	}
 
 	fmt.Printf("[DEBUG] config %v\n", cfg)
 	// --- MCP manager -------------------------------------------------------
@@ -81,6 +106,7 @@ func main() {
 		LLM:     llmClient,
 		Rag:     rag,
 		Cfg:     cfg,
+		Frontend: frontend,
 	}
 
 	mux := h.ServeMux()

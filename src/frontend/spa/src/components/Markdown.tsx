@@ -1,5 +1,6 @@
 import React from "react";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 
 // Configure marked: allow HTML, sanitize, proper line breaks
 marked.setOptions({
@@ -13,7 +14,7 @@ interface MarkdownProps {
 }
 
 export const Markdown: React.FC<MarkdownProps> = ({ content, className = "" }) => {
-  const html = marked.parse(content) as string;
+  const html = DOMPurify.sanitize(marked.parse(content) as string);
 
   return (
     <div

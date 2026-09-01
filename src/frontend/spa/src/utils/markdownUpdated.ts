@@ -10,7 +10,7 @@ export function markdownToHtml(markdownText: string): string {
       async: false,
       breaks: true, // Convert \n to <br> in markdown
       gfm: true,    // Enable GitHub Flavored Markdown
-      sanitize: true, // Sanitize HTML for security
+
       silent: true   // Silent mode - won't throw errors on invalid markup
     }) as string;
   } catch (error) {

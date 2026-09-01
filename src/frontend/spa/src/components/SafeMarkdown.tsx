@@ -1,11 +1,13 @@
 import React from "react";
 import { marked } from "marked";
+import DOMPurify from "dompurify";
 
-// Configure marked options for safe HTML rendering
+// Configure marked options for safe HTML rendering.
+// NOTE: marked v18 removed its own `sanitize` option, so sanitization is
+// applied below via DOMPurify to prevent XSS attacks.
 marked.setOptions({
   gfm: true,
   breaks: true,
-  sanitize: true, // Sanitize HTML to prevent XSS attacks
 });
 
 interface MarkdownProps {
@@ -19,9 +21,10 @@ interface MarkdownProps {
  */
 export const SafeMarkdown: React.FC<MarkdownProps> = ({ content, className = "" }) => {
   try {
-    // Convert markdown to HTML
-    const html = marked.parse(content) as string;
-    
+    // marked (v18) dropped its own sanitize option, so sanitize via DOMPurify
+    const rawHtml = marked.parse(content) as string;
+    const html = DOMPurify.sanitize(rawHtml) as string;
+
     return (
       <div
         className={`markdown-body ${className}`}

@@ -23,6 +23,7 @@ import (
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
 	"github.com/stevek/go-ai-agent/backend-go/internal/mcpclient"
 	"github.com/stevek/go-ai-agent/backend-go/internal/ragstore"
+	"github.com/stevek/go-ai-agent/backend-go/internal/serving"
 )
 
 // Handlers bundles the dependencies shared by all handlers. It is passed through
@@ -36,6 +37,10 @@ type Handlers struct {
 	Rag *ragstore.RAGStore
 	// Config holds the resolved configuration for building the context builder.
 	Cfg *config.Config
+
+	// Frontend serves the built SPA at the /frontend/* prefix. When nil or
+	// disabled the /frontend/* endpoints are omitted from ServeMux.
+	Frontend *serving.Server
 }
 
 // Cors returns the effective CORS settings for the middleware, sourced from the
@@ -44,8 +49,8 @@ func (h Handlers) Cors() config.Cors {
 	return h.Cfg.Cors()
 }
 
-// ServeMux builds the /api/* mux for the backend. The routes mirror the Python
-// main.py mounts exactly; no endpoint-shape changes are introduced here.
+// ServeMux builds the router for the backend: the /api/* handlers plus, when
+// configured, the /frontend/* SPA static file server.
 func (h Handlers) ServeMux() http.Handler {
 	mux := http.NewServeMux()
 
@@ -72,6 +77,20 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("/api/auth/register", auth.handleRegister)
 	mux.HandleFunc("/api/auth/login", auth.handleLogin)
 	mux.HandleFunc("/api/auth/me", auth.handleMe)
+
+	// Serve the SPA (if configured) at /frontend/* before the /api/* mux, so
+	// frontend requests are handled by the static file server rather than the
+	// child mux. Registered on the top-level mux only (not on `mux`, the /api
+	// sub-mux) so it always wins for the /frontend subtree.
+	if h.Frontend != nil {
+		mux.Handle(serving.Prefix, h.Frontend.Handler())
+		// Register the trailing-slash-less form too. Go 1.21+ pattern mux does
+		// not match a subtree pattern to its own prefix without the slash, so we
+		// redirect /frontend -> /frontend/ and let the subtree handler serve it.
+		mux.HandleFunc(serving.FrontendPath, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, serving.Prefix, http.StatusFound)
+		})
+	}
 
 	return corsMiddleware(http.Handler(mux), h.Cors())
 }

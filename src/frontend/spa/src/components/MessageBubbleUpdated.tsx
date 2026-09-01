@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState } from "react";
 import { SafeMarkdown } from "./SafeMarkdown";
 
 interface MessageBubbleProps {
@@ -17,22 +17,11 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   confluenceLinks,
   isStreaming,
   error,
+  // isUser is computed below
 }) => {
+  const isUser = role === "user";
   const [showSources, setShowSources] = useState(false);
   const [showConfluence, setShowConfluence] = useState(false);
-  const [formattedContent, setFormattedContent] = useState("");
-  const isUser = role === "user";
-  
-  // Ref to track if we've processed the content
-  const processedRef = useRef(false);
-
-  useEffect(() => {
-    // Only process assistant messages during streaming or when content changes
-    if (role === "assistant" && !processedRef.current) {
-      setFormattedContent(content);
-      processedRef.current = true;
-    }
-  }, [content, role]);
 
   // For assistant messages with markdown content (non-streaming)
   if (role === "assistant" && !isStreaming) {
