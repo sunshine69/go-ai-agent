@@ -1,12 +1,10 @@
 mcp-server/supersoniciq-mcp-server
 **/.playwright-mcp/**
-backend-go
 rag-indexer
 .geniq_rag.db*
 resources/**
 conversations.json
 **/rag_documents/**
-src/backend/conversations.json
 **/node_modules/**
 **/build/**
 **/rag_chroma_db/**
@@ -56,7 +54,6 @@ uploads/*
 *.gz
 *.bz2
 *.xz
-*.db
 .vscode
 models/.*
 *.list
