@@ -49,6 +49,9 @@ type Config struct {
 	// already permissive enough that no changes are needed to make the Wails app
 	// work. Set CORS_ENABLED=false to disable the middleware entirely.
 	CORSEnabled      bool
+	// DB (application datastore: users, conversations, messages)
+	DBPath    string
+	DBDriver string
 	CORSAuthority    string // Access-Control-Allow-Origin (":" = any, or a comma list)
 	CORSMethods      string // Access-Control-Allow-Methods
 	CORSAllowHeaders string // Access-Control-Allow-Headers
@@ -139,6 +142,10 @@ func Load(envDotPath string) *Config {
 		RAGEmbeddingModel: envKey("RAG_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
 		EmbeddingAPIKey:   envKey("EMBEDDING_API_KEY", envKey("LLM_API_KEY", "sk-placeholder")),
 	}
+	// DB: application datastore (users, conversations, messages). SQLite is the
+	// default driver; pass a registered driver name for PostgreSQL.
+	cfg.DBPath = envKey("DB_PATH", filepath.Join(wd, ".sonic.db"))
+	cfg.DBDriver = envKey("DB_DRIVER", "sqlite3")
 
 	// Embedding base URL defaults to the LLM base URL unless explicitly set, so
 	// a single local OpenAI-compatible server can serve both.

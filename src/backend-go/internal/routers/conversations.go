@@ -1,23 +1,39 @@
+// Package routers — conversations.go: DB-backed, per-user conversation history.
+//
+// GET /api/conversations           (authed)  -> user's conversation list
+// POST /api/conversations          (authed)  -> {id,title,created_at,updated_at}
+// GET /api/conversations/{id}      (authed)  -> full conversation (only its own)
+// DELETE /api/conversations/{id}   (authed)  -> ok (only its own)
+// DELETE /api/conversations        (authed)  -> clear user's own conversations
+//
+// Every conversation is owned by a single user id; other users cannot read,
+// modify, or delete it. The conversation id returned to the client is the raw
+// integer primary key so the frontend can pass it straight back.
 package routers
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
-	"strings"
-	"sync"
 	"time"
 )
 
-// conversation mirrors the Python conversation dict shape.
-type conversation struct {
+type conversationsHandler struct {
+	db *db.DB
+}
+
+func newConversationsHandler(db *db.DB) *conversationsHandler {
+	return &conversationsHandler{db: db}
+}
+
+// convPublicView is the serialisable view of a conversation returned to the
+// frontend (id, title, timestamps, messages).
+type convPublicView struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
 	CreatedAt string    `json:"created_at"`
 	UpdatedAt string    `json:"updated_at"`
 	Messages  []message `json:"messages"`
 }
+
 type message struct {
 	Role            string           `json:"role"`
 	Content         string           `json:"content"`
@@ -26,247 +42,126 @@ type message struct {
 	ConfluenceLinks []confluenceLink `json:"confluence_links,omitempty"`
 }
 
-var (
-	convMu  sync.Mutex
-	convSeq int
-	convs   = map[string]*conversation{}
-)
-
-// loadConversations restores persisted conversations from the store file (if
-// CONVERSATIONS_STORE_PATH points at an existing one), mirroring the Python
-// backend's single load at import time.
-func loadConversations() {
-	path := os.Getenv("CONVERSATIONS_STORE_PATH")
-	if path == "" {
-		return
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return
-	}
-	var loaded map[string]*conversation
-	if err := json.Unmarshal(data, &loaded); err != nil {
-		return
-	}
-	for _, c := range loaded {
-		if c == nil {
-			continue
-		}
-		convs[c.ID] = c
-		var n int
-		if _, err := fmt.Sscanf(c.ID, "CONV-%04d", &n); err == nil && n > convSeq {
-			convSeq = n
-		}
-	}
-}
-
-func newConversationID() string {
-	convSeq++
-	return fmt.Sprintf("CONV-%04d", convSeq)
-}
-
-func nowISO() string {
-	return time.Now().UTC().Format("2006-01-02T15:04:05Z")
-}
-
-func persistConversations() {
-	path := os.Getenv("CONVERSATIONS_STORE_PATH")
-	if path == "" {
-		return
-	}
-	data, err := json.MarshalIndent(convs, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(path, data, 0o644)
-}
-
-type conversationsHandler struct{}
-
-func newConversationsHandler() *conversationsHandler {
-	return &conversationsHandler{}
-}
-
-// convView returns the public view of a conversation used by list/create/get.
-func convView(c *conversation) conversation {
-	if c.Messages == nil {
-		return conversation{
-			ID:        c.ID,
-			Title:     c.Title,
-			CreatedAt: c.CreatedAt,
-			UpdatedAt: c.UpdatedAt,
-			Messages:  []message{},
-		}
-	}
-	// Strip the internal key field from messages in the view.
-	msgs := make([]message, 0, len(c.Messages))
-	for _, m := range c.Messages {
-		mm := m
-		mm.Key = ""
-		msgs = append(msgs, mm)
-	}
-	return conversation{
-		ID:        c.ID,
-		Title:     c.Title,
-		CreatedAt: c.CreatedAt,
-		UpdatedAt: c.UpdatedAt,
-		Messages:  msgs,
-	}
-}
-
-// handleListAndCreate serves both GET (list) and POST (create).
+// handleListAndCreate serves GET (list) and POST (create) for the caller.
 func (h *conversationsHandler) handleListAndCreate(w http.ResponseWriter, r *http.Request) {
-	convMu.Lock()
-	defer convMu.Unlock()
-
+	uid, ok := currentUserID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
-		items := make([]conversation, 0, len(convs))
-		for _, c := range convs {
-			items = append(items, convView(c))
+		views, err := h.db.Conversations.ListConversations(uid)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list conversations")
+			return
 		}
-		sortByUpdated(items)
-		writeJSON(w, http.StatusOK, items)
+		if views == nil {
+			views = []convPublicView{}
+		}
+		// Emit a list of lightweight summaries (no full messages) so the
+		// sidebar stays cheap; the full list is fetched via the GET by id.
+		writeJSON(w, http.StatusOK, views)
 	case http.MethodPost:
 		var body struct {
 			Title string `json:"title"`
 		}
 		_ = decodeBody(r, &body)
-		title := strings.TrimSpace(body.Title)
-		if title == "" {
-			title = "New Conversation"
+		view, err := h.db.Conversations.CreateConversation(uid, body.Title)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to create conversation")
+			return
 		}
-		now := nowISO()
-		c := &conversation{
-			ID:        newConversationID(),
-			Title:     title,
-			CreatedAt: now,
-			UpdatedAt: now,
-			Messages:  []message{},
-		}
-		convs[c.ID] = c
-		persistConversations()
-		writeJSON(w, http.StatusOK, convView(c))
+		writeJSON(w, http.StatusOK, h.toPublicView(view))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-// handleByID handles GET and DELETE for a specific conversation.
+// handleByID handles GET and DELETE for a specific conversation. Ownership is
+// enforced: a user can only touch their own conversation.
 func (h *conversationsHandler) handleByID(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/conversations/")
+	uid, ok := currentUserID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id := trimPrefix(r.URL.Path, "/api/conversations/")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "missing conversation id")
 		return
 	}
-	convMu.Lock()
-	defer convMu.Unlock()
 
 	switch r.Method {
 	case http.MethodGet:
-		c, ok := convs[id]
-		if !ok {
+		view, err := h.db.Conversations.GetConversation(uid, id)
+		if err != nil {
 			writeError(w, http.StatusNotFound, "Conversation not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, convView(c))
+		writeJSON(w, http.StatusOK, h.toPublicView(view))
 	case http.MethodDelete:
-		if _, ok := convs[id]; !ok {
+		if err := h.db.Conversations.DeleteConversation(uid, id); err != nil {
 			writeError(w, http.StatusNotFound, "Conversation not found")
 			return
 		}
-		delete(convs, id)
-		persistConversations()
 		writeJSON(w, http.StatusOK, map[string]string{"message": "Conversation deleted"})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
-// handleClearAll serves DELETE for /api/conversations with no id.
+// handleClearAll serves DELETE for /api/conversations with no id (clears the
+// caller's own conversations).
 func (h *conversationsHandler) handleClearAll(w http.ResponseWriter, r *http.Request) {
+	uid, ok := currentUserID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if r.Method != http.MethodDelete {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	convMu.Lock()
-	defer convMu.Unlock()
-	count := len(convs)
-	convs = map[string]*conversation{}
-	convSeq = 0
-	persistConversations()
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"message": "Conversations cleared",
-		"deleted": count,
-	})
-}
-
-func sortByUpdated(items []conversation) {
-	// Simple insertion sort preserving relative order for equal timestamps.
-	for i := 1; i < len(items); i++ {
-		for j := i; j > 0 && items[j-1].UpdatedAt < items[j].UpdatedAt; j-- {
-			items[j-1], items[j] = items[j], items[j-1]
-		}
-	}
-}
-
-// createNewConversation creates and persists a brand-new conversation, mirroring
-// the Python create_conversation() helper.
-func createNewConversation() *conversation {
-	convMu.Lock()
-	defer convMu.Unlock()
-
-	cid := newConversationID()
-	now := nowISO()
-	c := &conversation{
-		ID:        cid,
-		Title:     "New Conversation",
-		CreatedAt: now,
-		UpdatedAt: now,
-		Messages:  []message{},
-	}
-	convs[cid] = c
-	persistConversations()
-	return c
-}
-
-// getConversation returns the conversation by id, or nil if unknown — mirroring
-// the Python conversation() helper which returns None for unknown ids.
-func getConversation(id string) *conversation {
-	convMu.Lock()
-	defer convMu.Unlock()
-	return convs[id]
-}
-
-// appendMessage persists a single turn (user/assistant) to a conversation,
-// tagging the user turn with a sentinel key so the backend can exclude it from
-// the next turn's history replay (mirrors the Python backend).
-func appendMessage(id, role, content, key string, sources []string, confluenceLinks []confluenceLink) {
-	convMu.Lock()
-	defer convMu.Unlock()
-
-	c := convs[id]
-	if c == nil {
+	if err := h.db.Conversations.ClearAllConversations(uid); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to clear conversations")
 		return
 	}
-	c.Messages = append(c.Messages, message{
-		Role:            role,
-		Content:         content,
-		Key:             key,
-		Sources:         sources,
-		ConfluenceLinks: confluenceLinks,
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "Conversations cleared",
 	})
-	// Mirror the Python backend: seed a readable title from the first user
-	// message instead of leaving the generic "New Conversation" label.
-	if role == "user" && c.Title == "New Conversation" {
-		preview := strings.Join(strings.Fields(content), " ")
-		if len(preview) > 60 {
-			preview = preview[:60] + "…"
-		} else if preview == "" {
-			preview = "Untitled"
-		}
-		c.Title = preview
+}
+
+func (h *conversationsHandler) toPublicView(v db.ConvView) convPublicView {
+	pv := convPublicView{
+		ID:        v.ID,
+		Title:     v.Title,
+		CreatedAt: v.CreatedAt,
+		UpdatedAt: v.UpdatedAt,
+		Messages:  []message{},
 	}
-	c.UpdatedAt = nowISO()
-	persistConversations()
+	if v.CreatedAt == "" {
+		pv.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if v.UpdatedAt == "" {
+		pv.UpdatedAt = pv.CreatedAt
+	}
+	for _, m := range v.Messages {
+		pv.Messages = append(pv.Messages, message{
+			Role:            m.Role,
+			Content:         m.Content,
+			Key:             m.Key,
+			Sources:         m.Sources,
+			ConfluenceLinks: m.Confluence,
+		})
+	}
+	return pv
+}
+
+// trimPrefix returns s with prefix removed from the front if present.
+func trimPrefix(s, prefix string) string {
+	if len(s) >= len(prefix) && s[:len(prefix)] == prefix {
+		return s[len(prefix):]
+	}
+	return s
 }
