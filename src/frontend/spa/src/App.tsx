@@ -121,10 +121,48 @@ export default function App() {
     if (showAuthedUI) refreshConversations();
   }, [showAuthedUI]);
 
-  // --- Auto-scroll chat to bottom when messages change or streaming updates ---
+  // --- "Tail mode" (auto-stick to bottom) ---
+  // While streaming we normally pin the scroll container to its bottom so the
+  // latest streamed text is always visible. If the user manually scrolls up
+  // (wheel / page-up / arrow up / drag the scrollbar) we *exit* tail mode: we
+  // stop force-scrolling so they can read the freely. When they scroll back to
+  // the bottom we *re-enter* tail mode and follow the stream again. Streaming
+  // keeps flowing the whole time — only the scroll behavior changes.
+  const stickyAtBottomRef = useRef(true);
+  const isAtBottom = (el: HTMLElement) =>
+    el.scrollHeight - el.clientHeight - el.scrollTop <= 5;
+
+  // Keep the tail flag in sync with the user's actual scroll position.
+  // IMPORTANT: the dependency is [showAuthedUI], not [].
+  // The chat element does not exist on the app's first render (the login
+  // screen is shown, so chatHistoryRef.current is null). With [] this effect
+  // runs once, bails out because the element is null, and never re-runs — so the
+  // scroll listener is attached to nothing and stickyAtBottomRef stays stuck at
+  // its initial `true`. That makes the auto-scroll effect below force-scroll to
+  // the bottom on every chunk, so the user can never scroll up mid-stream.
+  // Depending on showAuthedUI lets the effect (re)run after the app becomes
+  // visible, at which point the element is attached and the listener succeeds.
   useEffect(() => {
-    if (chatHistoryRef.current) {
-      chatHistoryRef.current.scrollTop = chatHistoryRef.current.scrollHeight;
+    const el = chatHistoryRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      stickyAtBottomRef.current = isAtBottom(el);
+    };
+    el.addEventListener("scroll", onScroll);
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [showAuthedUI]);
+
+  // --- Auto-scroll chat to bottom when messages change or streaming updates ---
+  // Only force-scroll when we are in tail mode. Otherwise leave the user's
+  // scroll position untouched so they can page up/down to read.
+  useEffect(() => {
+    const el = chatHistoryRef.current;
+    if (!el) return;
+    if (stickyAtBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    } else {
+      // Content may have grown to reach the bottom; re-check tail state.
+      stickyAtBottomRef.current = isAtBottom(el);
     }
   }, [messages, streamingState.currentChunk]);
 
