@@ -73,8 +73,9 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("/api/messages", requireAuth(messages.handle))
 	mux.HandleFunc("/api/messages/stream", requireAuth(messagesStream.proxyLLMStream)) // Direct proxy to LLM
 	mux.HandleFunc("/api/chat/stream", requireAuth(messagesStream.handleStreamChat))   // Alternative SSE format endpoint
-	mux.HandleFunc("/api/conversations", conversations.handleListAndCreate)
-	mux.HandleFunc("/api/conversations/", conversations.handleByID)
+	mux.HandleFunc("/api/conversations", conversations.handleListAndCreate)            // GET (list), POST (create)
+	mux.HandleFunc("DELETE /api/conversations", conversations.handleClearAll)          // DELETE (clear all) — no trailing slash, method-specific pattern wins
+	mux.HandleFunc("/api/conversations/", conversations.handleByID)                    // GET, DELETE /{id} (a single conversation)
 	mux.HandleFunc("/api/confluence/search", confluence.handleSearch)
 	mux.HandleFunc("/api/documents/", documents.handle)
 	mux.HandleFunc("/api/forms", forms.handle)
@@ -83,12 +84,12 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("/api/auth/login", auth.handleLogin)
 	mux.HandleFunc("/api/auth/me", auth.handleMe)
 	// --- New DB-backed auth endpoints (multi-user) ---
-	mux.HandleFunc("/api/auth/logout", auth.handleLogout)             // POST
-	mux.HandleFunc("GET /api/auth/users", auth.handleUsers)              // GET (list)
-	mux.HandleFunc("POST /api/auth/users", auth.handleCreateUser)        // POST (create)
-	mux.HandleFunc("/api/auth/users/", auth.handleDeleteUser)        // DELETE /{id}
-	mux.HandleFunc("GET /api/auth/me/profile", auth.handleProfile)       // GET (read)
-	mux.HandleFunc("PATCH /api/auth/me/profile", auth.handleProfileUpdate) // PATCH
+	mux.HandleFunc("/api/auth/logout", auth.handleLogout)                      // POST
+	mux.HandleFunc("GET /api/auth/users", auth.handleUsers)                    // GET (list)
+	mux.HandleFunc("POST /api/auth/users", auth.handleCreateUser)              // POST (create)
+	mux.HandleFunc("/api/auth/users/", auth.handleDeleteUser)                  // DELETE /{id}
+	mux.HandleFunc("GET /api/auth/me/profile", auth.handleProfile)             // GET (read)
+	mux.HandleFunc("PATCH /api/auth/me/profile", auth.handleProfileUpdate)     // PATCH
 	mux.HandleFunc("/api/auth/me/profile/password", auth.handlePasswordChange) // POST
 
 	// Serve the SPA (if configured) at /frontend/* before the /api/* mux, so
