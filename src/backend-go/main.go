@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stevek/go-ai-agent/backend-go/internal/config"
+	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 	"github.com/stevek/go-ai-agent/backend-go/internal/embeddings"
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
 	"github.com/stevek/go-ai-agent/backend-go/internal/mcpclient"
@@ -100,12 +101,27 @@ func main() {
 		log.Println("RAG disabled")
 	}
 
+	// --- DB: application datastore (users, conversations, messages) --------
+	// The DB-backed auth & conversations endpoints require this. When left nil
+	// (see below), those endpoints would panic at request time, so we must
+	// open the store and pass it through to routers.Handlers.
+	d, err := db.Open(cfg.DBPath, cfg.DBDriver) // "sqlite3" default (SQLite)
+	if err != nil {
+		log.Fatalf("db open: %v", err)
+	}
+	defer d.Close()
+	// Seed the initial admin account if none exists yet.
+	if _, err := d.SeedAdmin("admin", "admin@example.com", "admin"); err != nil {
+		log.Printf("warning: seed admin failed: %v", err)
+	}
+
 	// --- Handlers ----------------------------------------------------------
 	h := routers.Handlers{
 		Manager: manager,
 		LLM:     llmClient,
 		Rag:     rag,
 		Cfg:     cfg,
+		DB:      d,
 		Frontend: frontend,
 	}
 

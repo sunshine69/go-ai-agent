@@ -12,6 +12,7 @@
 package routers
 
 import (
+	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 	"net/http"
 	"time"
 )
@@ -57,7 +58,7 @@ func (h *conversationsHandler) handleListAndCreate(w http.ResponseWriter, r *htt
 			return
 		}
 		if views == nil {
-			views = []convPublicView{}
+			views = []db.ConvView{}
 		}
 		// Emit a list of lightweight summaries (no full messages) so the
 		// sidebar stays cheap; the full list is fetched via the GET by id.
@@ -152,7 +153,7 @@ func (h *conversationsHandler) toPublicView(v db.ConvView) convPublicView {
 			Content:         m.Content,
 			Key:             m.Key,
 			Sources:         m.Sources,
-			ConfluenceLinks: m.Confluence,
+			ConfluenceLinks: toConfluenceLinks(m.Confluence),
 		})
 	}
 	return pv
@@ -164,4 +165,22 @@ func trimPrefix(s, prefix string) string {
 		return s[len(prefix):]
 	}
 	return s
+}
+
+// toConfluenceLinks converts an untyped []any slice of confluence link objects
+// (as stored by the context builder) into typed confluenceLink values. Each
+// element may be either a map[string]any or a map[string]string.
+func toConfluenceLinks(src []any) []confluenceLink {
+	out := []confluenceLink{}
+	for _, e := range src {
+		switch v := e.(type) {
+		case map[string]any:
+			title, _ := v["title"].(string)
+			url, _ := v["url"].(string)
+			out = append(out, confluenceLink{Title: title, URL: url})
+		case map[string]string:
+			out = append(out, confluenceLink{Title: v["title"], URL: v["url"]})
+		}
+	}
+	return out
 }

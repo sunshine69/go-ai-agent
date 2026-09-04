@@ -45,6 +45,23 @@ func currentUserIDOr(r *http.Request, fallback int64) int64 {
 	return fallback
 }
 
+// requireAuth returns a handler that guards inner: only a caller presenting a
+// valid "Authorization: Bearer <jwt>" token may proceed. It is the mux-level
+// counterpart to the per-handler currentUserID checks and lets ServeMux protect
+// an endpoint in one place. On failure it writes a 401 with the standard
+// error body and does not call inner. This protects the "brain" and read
+// endpoints (/api/messages*, /api/domains) that would otherwise let an
+// anonymous caller resolve user id 0 against the datastore.
+func requireAuth(inner http.HandlerFunc) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := currentUserID(r); !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		inner(w, r)
+	}
+}
+
 // requireAdmin checks that the caller is authenticated and returns true. It is
 // meant to be used together with the auth handler having a db reference:
 //
@@ -57,7 +74,7 @@ func requireAdmin(r *http.Request, h *authHandler, w http.ResponseWriter) bool {
 		writeError(w, http.StatusUnauthorized, "admin access required")
 		return false
 	}
-	u, err := h.db.Users.getByID(uid)
+	u, err := h.db.Users.GetByID(uid)
 	if err != nil {
 		writeError(w, http.StatusForbidden, "admin access required")
 		return false

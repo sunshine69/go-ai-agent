@@ -1,3 +1,6 @@
+jwt_secret.txt
+**/dist/**
+*.db
 mcp-server/supersoniciq-mcp-server
 **/.playwright-mcp/**
 rag-indexer

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	ctxpkg "github.com/stevek/go-ai-agent/backend-go/internal/context"
+	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
 )
 
@@ -53,23 +54,28 @@ func writeSSEError(w http.ResponseWriter, message string) {
 // persistStreamUserTurn persists the user turn that started the current
 // streaming response. Tagging it with the current-turn key mirrors the non
 // streaming path (messages.go) so the next turn's history replay excludes it.
-func persistStreamUserTurn(convID, msg string) {
-	if convID == "" || msg == "" {
+func persistStreamUserTurn(m *messageStreamHandler, r *http.Request, conv db.ConvView, msg string) {
+	if msg == "" || conv.ID == "" {
 		return
 	}
+	// Persist to the ALREADY-resolved conversation (not a fresh one). Passing
+	// an empty id to resolveConversation would create a second, orphaned
+	// conversation — that is exactly what caused the "two conversations" bug.
+	// Use the conv handed to us by the caller so the user turn lands in the
+	// same conversation as the streamed assistant answer and its title.
 	userKey := "__current_user__:" + msg
-	appendMessage(convID, "user", msg, userKey, nil, nil)
+	persistMessage(m.h, r, conv, "user", msg, userKey, nil)
 }
 
 // persistStreamResponse persists the assistant reply for the current streaming
 // response. It extracts the text the same way the SPA (useStreaming) does from
 // an OpenAI-style message event so the stored content matches what the client
 // displays.
-func persistStreamResponse(convID string, content string) {
-	if convID == "" || content == "" {
+func persistStreamResponse(m *messageStreamHandler, r *http.Request, conv db.ConvView, content string) {
+	if conv.ID == "" || content == "" {
 		return
 	}
-	appendMessage(convID, "assistant", content, "", nil, nil)
+	persistMessage(m.h, r, conv, "assistant", content, "", nil)
 }
 
 // clientExtractedContent pulls the text chunk out of an incoming "message"
@@ -142,20 +148,17 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Resolve conversation ID (create new if none provided)
-	var convID string
-	if req.ConversationID != nil && *req.ConversationID != "" {
-		if existing := getConversation(*req.ConversationID); existing != nil {
-			convID = existing.ID
-		}
+	// Resolve conversation (owned by the caller; creates a new one if the
+	// requested id is missing or not owned).
+	conv := resolveConversation(m.h, r, derefStr(req.ConversationID))
+	if conv.ID == "" {
+		writeSSEError(w, "failed to resolve conversation")
+		return
 	}
-	if convID == "" {
-		newConv := createNewConversation()
-		convID = newConv.ID
-	}
+	convID := conv.ID
 
 	// Persist the user turn that started this streaming response.
-	persistStreamUserTurn(convID, msg)
+	persistStreamUserTurn(m, r, conv, msg)
 
 	// Build context using ContextBuilder (MCP + RAG)
 	builder := ctxpkg.New(m.h.Cfg, m.h.Manager, m.h.Rag)
@@ -167,7 +170,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		for _, ref := range confluenceRefs {
 			citations = append(citations, confluenceLink{
 				Title: ref["title"],
-				URL:   confluenceBaseURL + "/pages/viewpage.action?pageId=" + ref["id"],
+				URL:   confluenceBaseURL + "/pages/viewpage?pageId=" + ref["id"],
 			})
 		}
 	}
@@ -211,17 +214,13 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 		f.Flush()
 	}
 
-	// Build messages array including history if conversation exists
+	// Build messages array including history from the resolved conversation
 	history := []llm.ChatMessage{}
-	if convID != "" {
-		if conv := getConversation(convID); conv != nil {
-			for _, m := range conv.Messages {
-				history = append(history, llm.ChatMessage{
-					Role:    m.Role,
-					Content: m.Content,
-				})
-			}
-		}
+	for _, m := range conv.Messages {
+		history = append(history, llm.ChatMessage{
+			Role:    m.Role,
+			Content: m.Content,
+		})
 	}
 
 	msgs := []llm.ChatMessage{{Role: "system", Content: sysPrompt}}
@@ -324,7 +323,7 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 		"\"conversation_id\":\"%s\",\"sources\":%v,\"citations\":%v",
 		convID, formatSourcesForSSE(sources), formatCitationsForSSE(citations))
 
-	persistStreamResponse(convID, accContent)
+	persistStreamResponse(m, r, conv, accContent)
 	w.Write([]byte("event: done\ndata: {" + responseData + "}\n\n"))
 
 	if f, ok := w.(http.Flusher); ok {
@@ -353,20 +352,17 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Resolve conversation ID (create new if none provided)
-	var convID string
-	if req.ConversationID != nil && *req.ConversationID != "" {
-		if existing := getConversation(*req.ConversationID); existing != nil {
-			convID = existing.ID
-		}
+	// Resolve conversation (owned by the caller; creates a new one if the
+	// requested id is missing or not owned).
+	conv := resolveConversation(m.h, r, derefStr(req.ConversationID))
+	if conv.ID == "" {
+		writeSSEError(w, "failed to resolve conversation")
+		return
 	}
-	if convID == "" {
-		newConv := createNewConversation()
-		convID = newConv.ID
-	}
+	convID := conv.ID
 
 	// Persist the user turn that started this streaming response.
-	persistStreamUserTurn(convID, msg)
+	persistStreamUserTurn(m, r, conv, msg)
 
 	// Build context using ContextBuilder (MCP + RAG)
 	builder := ctxpkg.New(m.h.Cfg, m.h.Manager, m.h.Rag)
@@ -378,7 +374,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		for _, ref := range confluenceRefs {
 			citations = append(citations, confluenceLink{
 				Title: ref["title"],
-				URL:   confluenceBaseURL + "/pages/viewpage.action?pageId=" + ref["id"],
+				URL:   confluenceBaseURL + "/pages/viewpage?pageId=" + ref["id"],
 			})
 		}
 	}
@@ -406,17 +402,13 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 		userMsg = msg
 	}
 
-	// Build messages array including history if conversation exists
+	// Build messages array including history from the resolved conversation
 	history := []llm.ChatMessage{}
-	if convID != "" {
-		if conv := getConversation(convID); conv != nil {
-			for _, m := range conv.Messages {
-				history = append(history, llm.ChatMessage{
-					Role:    m.Role,
-					Content: m.Content,
-				})
-			}
-		}
+	for _, m := range conv.Messages {
+		history = append(history, llm.ChatMessage{
+			Role:    m.Role,
+			Content: m.Content,
+		})
 	}
 
 	msgs := []llm.ChatMessage{{Role: "system", Content: sysPrompt}}
@@ -530,7 +522,7 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 		"\"conversation_id\":\"%s\",\"sources\": %v,\"citations\": %v",
 		convID, formatSourcesForSSE(sources), formatCitationsForSSE(citations))
 
-	persistStreamResponse(convID, accContent)
+	persistStreamResponse(m, r, conv, accContent)
 	w.Write([]byte("event: done\ndata: {" + responseData + "}\n\n"))
 
 	if f, ok := w.(http.Flusher); ok {

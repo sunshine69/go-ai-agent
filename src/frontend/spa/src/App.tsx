@@ -1,10 +1,13 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Domain } from "./types";
 import { useStreaming, ChatMessage } from "./hooks/useStreaming";
+import { useAuth } from "./hooks/useAuth";
 import { Sidebar } from "./components/Sidebar";
 import { DomainPills } from "./components/DomainPill";
 import { SubCategoryPills } from "./components/SubCategoryPill";
 import { ChatArea } from "./components/ChatArea";
+import { Login } from "./components/Login";
+import { AuthError, fetchWithToken, deleteJSON } from "./utils/api";
 
 // Base URL for the AI backend — read from .env file
 const API_BASE =
@@ -34,6 +37,48 @@ export default function App() {
   const [currentConversationId, setCurrentConversationId] = useState("");
   const [domains, setDomains] = useState<Domain[]>([]);
 
+  // --- Auth ---
+  const { initialized, user, login, logout } = useAuth(API_BASE, () => setNeedLogin(true));
+  const [needLogin, setNeedLogin] = useState(false);
+  // Resolve whether the app content should render. Until `initialized` we show
+  // nothing so the user never sees the SPA behind a stale/invalid session.
+  const showAuthedUI = initialized && (user !== null);
+  // Tracks the previous authed state across renders so we can detect the
+  // authed -> unauthed transition on logout.
+  const prevAuthedRef = useRef(showAuthedUI);
+  // --- Detect authed -> unauthed transitions ---
+  // `logout()` sets `user` to null, which flips `showAuthedUI` to false and
+  // causes App to render <Login> instead of the app. App is NOT unmounted during
+  // this swap — it stays mounted with all its workspace state (messages, the
+  // active conversation id, selected domain/category) intact. That is exactly
+  // why the "new session" (+) button clears the screen (it calls
+  // setMessages([]) etc.) but logout did not: logout never touched any of it.
+  //
+  // This effect detects the transition and clears the current workspace so the
+  // next login starts on a blank screen.
+  useEffect(() => {
+    if (!initialized) return;
+    // Always record the current authed state BEFORE any early return,
+    // otherwise logging in never updates the ref and logout can't be detected.
+    const currentAuthed = showAuthedUI;
+    const prevAuthed = prevAuthedRef.current;
+    prevAuthedRef.current = currentAuthed;
+    if (showAuthedUI) return;
+
+    const wasAuthed = prevAuthed;
+    const justLoggedOut = wasAuthed; // we are past the return, so !showAuthedUI
+    // (updated above)
+
+    if (justLoggedOut) {
+      setSelectedDomain(null);
+      setSelectedSubCategory(null);
+      setCurrentConversationId("");
+      setMessages([]);
+      setNeedLogin(false);
+      resetStreaming();
+    }
+  }, [showAuthedUI, initialized]);
+
   // --- Streaming hook ---
   const {
     state: streamingState,
@@ -57,18 +102,24 @@ export default function App() {
 
   // --- Fetch domains on mount ---
   useEffect(() => {
-    fetch(`${API_BASE}/api/domains`)
+    if (!showAuthedUI) return;
+    fetchWithToken(API_BASE, {
+      url: "/api/domains",
+      method: "GET",
+    })
       .then((res) => res.json())
       .then((data: { domains: Domain[] }) => {
         setDomains(data.domains || []);
       })
-      .catch(() => {});
-  }, []);
+      .catch((err) => {
+        if (err instanceof AuthError) setNeedLogin(true);
+      });
+  }, [showAuthedUI]);
 
   // --- Fetch conversations on mount ---
   useEffect(() => {
-    refreshConversations();
-  }, []);
+    if (showAuthedUI) refreshConversations();
+  }, [showAuthedUI]);
 
   // --- Auto-scroll chat to bottom when messages change or streaming updates ---
   useEffect(() => {
@@ -125,7 +176,8 @@ export default function App() {
   const handleNewConversation = async () => {
     // Create a new conversation in the backend
     try {
-      const res = await fetch(`${API_BASE}/api/conversations`, {
+      const res = await fetchWithToken(API_BASE, {
+        url: "/api/conversations",
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
@@ -134,7 +186,9 @@ export default function App() {
         const data = await res.json();
         setCurrentConversationId(data.id);
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
     setSelectedDomain(null);
     setSelectedSubCategory(null);
     setMessages([]);
@@ -177,7 +231,10 @@ export default function App() {
 
   const handleConversationSelect = async (id: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/conversations/${id}`);
+      const res = await fetchWithToken(API_BASE, {
+        url: `/api/conversations/${id}`,
+        method: "GET",
+      });
       if (!res.ok) return;
       const data = await res.json();
       const msgs = (data.messages || [])
@@ -192,12 +249,14 @@ export default function App() {
         }));
       setMessages(msgs);
       setCurrentConversationId(id);
-    } catch {}
+    } catch {
+      // ignore
+    }
   };
 
   const handleConversationDelete = async (id: string) => {
     try {
-      await fetch(`${API_BASE}/api/conversations/${id}`, { method: "DELETE" });
+      await deleteJSON(API_BASE, `/api/conversations/${id}`);
       if (id === currentConversationId) {
         setCurrentConversationId("");
         setMessages([]);
@@ -208,7 +267,7 @@ export default function App() {
 
   const handleClearAllConversations = async () => {
     try {
-      await fetch(`${API_BASE}/api/conversations`, { method: "DELETE" });
+      await deleteJSON(API_BASE, "/api/conversations");
       setCurrentConversationId("");
       setMessages([]);
       refreshConversations();
@@ -217,7 +276,10 @@ export default function App() {
 
   const refreshConversations = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/conversations`);
+      const res = await fetchWithToken(API_BASE, {
+        url: "/api/conversations",
+        method: "GET",
+      });
       if (res.ok) {
         const data: Conversation[] = await res.json();
         setConversations(data || []);
@@ -308,10 +370,23 @@ export default function App() {
     }
   }
 
+  // Not ready to render app content (session still being resolved from storage)
+  if (!initialized) {
+    return (
+      <div className="auth-loading">Loading…</div>
+    );
+  }
+
+  // Not authenticated (or the session was rejected) — show the login screen.
+  if (!showAuthedUI || needLogin) {
+    return <Login login={login} />;
+  }
+
   return (
     <div className="app-container">
       {/* Sidebar */}
       <Sidebar
+        apiBaseUrl={API_BASE}
         selectedDomain={selectedDomain}
         selectedSubCategory={selectedSubCategory}
         conversations={conversations}
@@ -323,6 +398,8 @@ export default function App() {
         onClearAllConversations={handleClearAllConversations}
         onQuickAction={handleSelectDomain}
         domains={domains}
+        user={user}
+        onLogout={() => void logout()}
       />
 
       {/* Main content */}

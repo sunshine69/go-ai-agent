@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 	"github.com/stevek/go-ai-agent/backend-go/internal/context"
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
 )
@@ -67,22 +68,16 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- Resolve the conversation (mirrors Python send_message) -------------
-	var convID string
-	if cid := req.ConID; cid != "" {
-		if existing := getConversation(cid); existing != nil {
-			convID = existing.ID
-		}
-	}
-	if convID == "" {
-		convID = createNewConversation().ID
-	}
+	conv := resolveConversation(m.h, r, req.ConID)
+	// If an explicit conversation id was sent but does not exist (e.g. it
+	// belongs to another user or was deleted), resolveConversation already
+	// falls back to creating a fresh one.
 
 	// --- Build prior turns for the LLM (cross-turn context) ----------------
 	// Replay every persisted turn EXCEPT the current one (sent in the context
 	// block below). Matches the Python history-building logic.
 	userKey := "__current_user__:" + msg
-	history := []message{}
-	conv := getConversation(convID)
+	history := []db.DBMessage{}
 	for _, turn := range conv.Messages {
 		if turn.Role == "user" {
 			if turn.Key == userKey {
@@ -137,9 +132,9 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 	// --- Persist the current turn -----------------------------------------
 	// The assistant answer is persisted separately from the user turn.
 	if answer != "" {
-		appendMessage(convID, "assistant", answer, "", sources, confluenceLinks)
+		persistMessage(m.h, r, conv, "assistant", answer, "", sources)
 	}
-	appendMessage(convID, "user", msg, userKey, sources, confluenceLinks)
+	persistMessage(m.h, r, conv, "user", msg, userKey, sources)
 
 	// --- Return the response ------------------------------------------------
 	srcs := sources
@@ -148,7 +143,7 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, messageResponse{
-		ConID:           convID,
+		ConID:           conv.ID,
 		Answer:          answer,
 		Sources:         srcs,
 		ConfluenceLinks: confluenceLinks,

@@ -1,7 +1,11 @@
 import React, { useState } from "react";
 import { Domain } from "../types";
+import { AuthUser } from "../utils/token";
+import { ChangePassword } from "./ChangePassword";
+import { UserManagement } from "./UserManagement";
 
 interface SidebarProps {
+  apiBaseUrl: string;
   selectedDomain: Domain | null;
   selectedSubCategory: string | null;
   conversations: { id: string; title: string }[];
@@ -13,9 +17,12 @@ interface SidebarProps {
   onClearAllConversations: () => void;
   onQuickAction: (domain: Domain) => void;
   domains: Domain[];
+  user: AuthUser | null;
+  onLogout: () => Promise<void> | void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
+  apiBaseUrl,
   selectedDomain,
   selectedSubCategory,
   conversations,
@@ -27,9 +34,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onClearAllConversations,
   onQuickAction,
   domains,
+  user,
+  onLogout,
 }) => {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [showAllConversations, setShowAllConversations] = useState(false);
+  const [showUserPanel, setShowUserPanel] = useState(false);
 
   const currentScope = selectedDomain
     ? `${selectedDomain.icon} ${selectedDomain.display_name}${
@@ -187,6 +197,39 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="sidebar-clear-all">
           <button className="sidebar-clear-all-btn" onClick={onClearAllConversations}>
             Clear All Conversations
+          </button>
+        </div>
+      )}
+
+      {/* User menu toggle */}
+      {user && (
+        <div className="sidebar-user-menu-toggle">
+          <button
+            className="sidebar-user-menu-toggle-btn"
+            onClick={() => setShowUserPanel((v) => !v)}
+          >
+            {showUserPanel ? "▲" : "▼"} User Settings
+          </button>
+        </div>
+      )}
+
+      {/* User settings panel (change password for all; admin panel for admins) */}
+      {showUserPanel && user && (
+        <div className="sidebar-user-panel">
+          <ChangePassword apiBaseUrl={apiBaseUrl} />
+          {user.is_admin && <UserManagement apiBaseUrl={apiBaseUrl} />}
+        </div>
+      )}
+
+      {/* Footer: user identity + logout */}
+      {user && (
+        <div className="sidebar-footer">
+          <div className="sidebar-footer-info">
+            <span className="sidebar-footer-icon">👤</span>
+            <span className="sidebar-footer-name">{user.login_name}</span>
+          </div>
+          <button className="sidebar-footer-logout" onClick={() => onLogout()}>
+            Sign out
           </button>
         </div>
       )}

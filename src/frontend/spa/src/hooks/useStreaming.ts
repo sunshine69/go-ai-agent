@@ -14,6 +14,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import type { ChatRequest, ConfluenceLink } from "../types";
+import { getToken } from "../utils/token";
 
 export interface StreamingState {
   conversationId: string;
@@ -80,14 +81,20 @@ export function useStreaming(apiBaseUrl: string) {
       streamingStateRef.current = { ...freshState };
 
       try {
+        // Attach the bearer token so the backend's requireAuth middleware accepts
+        // the streaming endpoint (otherwise it 401s as an anonymous caller).
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        };
+        const token = getToken();
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+
         const response = await fetch(
           `${apiBaseUrl}/api/messages/stream`,
           {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Accept: "text/event-stream",
-            },
+            headers,
             body: JSON.stringify(payload),
             signal: controller.signal,
           }

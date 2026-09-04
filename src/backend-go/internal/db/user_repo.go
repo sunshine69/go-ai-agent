@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -51,7 +52,7 @@ func (ur *UserRepo) seedAdmin(login, email, password string) (*User, error) {
 	}
 
 	var isAdmin int
-	row := ur.db.db.QueryRowContext(nil, "SELECT is_admin FROM users WHERE login_name = ?", login)
+	row := ur.db.db.QueryRowContext(context.Background(), "SELECT is_admin FROM users WHERE login_name = ?", login)
 	if err := row.Scan(&isAdmin); err == nil {
 		// Admin already exists; return it without re-hashing / re-seeding.
 		u, err := ur.getByLogin(login)
@@ -67,8 +68,7 @@ func (ur *UserRepo) seedAdmin(login, email, password string) (*User, error) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	res, err := ur.db.db.ExecContext(
-		nil,
+	res, err := ur.db.db.ExecContext(context.Background(),
 		"INSERT INTO users (login_name, email, password_hash, is_admin, created_at) VALUES (?, ?, ?, 1, ?)",
 		login, email, string(hash), now,
 	)
@@ -82,7 +82,7 @@ func (ur *UserRepo) seedAdmin(login, email, password string) (*User, error) {
 // getByLogin returns a user by their login name.
 func (ur *UserRepo) getByLogin(login string) (*User, error) {
 	login = strings.TrimSpace(login)
-	row := ur.db.db.QueryRowContext(nil, `
+	row := ur.db.db.QueryRowContext(context.Background(), `
 		SELECT id, login_name, email, password_hash, is_admin, created_at, last_login
 		FROM users WHERE login_name = ?`, login)
 	u, err := scanUser(row)
@@ -95,9 +95,9 @@ func (ur *UserRepo) getByLogin(login string) (*User, error) {
 	return u, nil
 }
 
-// getByID returns a user by primary key.
-func (ur *UserRepo) getByID(id int64) (*User, error) {
-	row := ur.db.db.QueryRowContext(nil, `
+// GetByID returns a user by primary key.
+func (ur *UserRepo) GetByID(id int64) (*User, error) {
+	row := ur.db.db.QueryRowContext(context.Background(), `
 		SELECT id, login_name, email, password_hash, is_admin, created_at, last_login
 		FROM users WHERE id = ?`, id)
 	u, err := scanUser(row)
@@ -112,7 +112,7 @@ func (ur *UserRepo) getByID(id int64) (*User, error) {
 
 // list returns every user (including their hash, which is stripped in UserView).
 func (ur *UserRepo) list() ([]*User, error) {
-	rows, err := ur.db.db.QueryContext(nil, `
+	rows, err := ur.db.db.QueryContext(context.Background(), `
 		SELECT id, login_name, email, password_hash, is_admin, created_at, last_login
 		FROM users ORDER BY id`)
 	if err != nil {
@@ -159,7 +159,7 @@ func (ur *UserRepo) Insert(login, email, password string, isAdmin bool) (*User, 
 	if isAdmin {
 		adminInt = 1
 	}
-	res, err := ur.db.db.ExecContext(nil,
+	res, err := ur.db.db.ExecContext(context.Background(),
 		"INSERT INTO users (login_name, email, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?, ?)",
 		login, email, string(hash), adminInt, now)
 	if err != nil {
@@ -169,7 +169,7 @@ func (ur *UserRepo) Insert(login, email, password string, isAdmin bool) (*User, 
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return ur.getByID(id)
+	return ur.GetByID(id)
 }
 
 // SetPassword updates a user's password hash.
@@ -181,7 +181,7 @@ func (ur *UserRepo) SetPassword(id int64, password string) error {
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
-	res, err := ur.db.db.ExecContext(nil, "UPDATE users SET password_hash = ?, last_login = NULL WHERE id = ?", string(hash), id)
+	res, err := ur.db.db.ExecContext(context.Background(), "UPDATE users SET password_hash = ?, last_login = NULL WHERE id = ?", string(hash), id)
 	if err != nil {
 		return err
 	}
@@ -194,7 +194,7 @@ func (ur *UserRepo) SetPassword(id int64, password string) error {
 
 // SetEmail updates a user's email address.
 func (ur *UserRepo) SetEmail(id int64, email string) error {
-	res, err := ur.db.db.ExecContext(nil, "UPDATE users SET email = ? WHERE id = ?", email, id)
+	res, err := ur.db.db.ExecContext(context.Background(), "UPDATE users SET email = ? WHERE id = ?", email, id)
 	if err != nil {
 		return err
 	}
@@ -207,22 +207,22 @@ func (ur *UserRepo) SetEmail(id int64, email string) error {
 
 // Delete removes a user and all of their conversation history.
 func (ur *UserRepo) Delete(id int64) error {
-	tx, err := ur.db.db.BeginTx(nil, nil)
+	tx, err := ur.db.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(nil, "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)", id); err != nil {
+	if _, err := tx.ExecContext(context.Background(), "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)", id); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(nil, "DELETE FROM conversations WHERE user_id = ?", id); err != nil {
+	if _, err := tx.ExecContext(context.Background(), "DELETE FROM conversations WHERE user_id = ?", id); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(nil, "DELETE FROM users_token WHERE user_id = ?", id); err != nil {
+	if _, err := tx.ExecContext(context.Background(), "DELETE FROM users_token WHERE user_id = ?", id); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(nil, "DELETE FROM users WHERE id = ?", id)
+	res, err := tx.ExecContext(context.Background(), "DELETE FROM users WHERE id = ?", id)
 	if err != nil {
 		return err
 	}
@@ -243,7 +243,7 @@ func (ur *UserRepo) VerifyPassword(login, password string) (*User, error) {
 		return nil, ErrNotFound
 	}
 	// Refresh last_login timestamp on successful login.
-	_, _ = ur.db.db.ExecContext(nil, "UPDATE users SET last_login = ? WHERE id = ?", time.Now().UTC().Format(time.RFC3339), u.ID)
+	_, _ = ur.db.db.ExecContext(context.Background(), "UPDATE users SET last_login = ? WHERE id = ?", time.Now().UTC().Format(time.RFC3339), u.ID)
 	return u, nil
 }
 
@@ -256,7 +256,7 @@ func (ur *UserRepo) HasUser(login string) bool {
 
 // TokenFor stores (or returns an existing) JWT token bound to a user.
 func (ur *UserRepo) TokenFor(userID int64, token string) error {
-	_, err := ur.db.db.ExecContext(nil,
+	_, err := ur.db.db.ExecContext(context.Background(),
 		"INSERT INTO users_token (user_id, token) VALUES (?, ?) ON CONFLICT(user_id, token) DO NOTHING",
 		userID, token)
 	return err
@@ -264,20 +264,20 @@ func (ur *UserRepo) TokenFor(userID int64, token string) error {
 
 // DeleteToken removes a single JWT token for a user (used on logout).
 func (ur *UserRepo) DeleteToken(userID int64, token string) error {
-	_, err := ur.db.db.ExecContext(nil, "DELETE FROM users_token WHERE user_id = ? AND token = ?", userID, token)
+	_, err := ur.db.db.ExecContext(context.Background(), "DELETE FROM users_token WHERE user_id = ? AND token = ?", userID, token)
 	return err
 }
 
 // RevokeAll revokes every token for a user.
 func (ur *UserRepo) RevokeAll(userID int64) error {
-	_, err := ur.db.db.ExecContext(nil, "DELETE FROM users_token WHERE user_id = ?", userID)
+	_, err := ur.db.db.ExecContext(context.Background(), "DELETE FROM users_token WHERE user_id = ?", userID)
 	return err
 }
 
 // isValidToken reports whether the (user, token) pair is a known, valid token.
 func (ur *UserRepo) isValidToken(userID int64, token string) bool {
 	var n int
-	row := ur.db.db.QueryRowContext(nil, "SELECT COUNT(1) FROM users_token WHERE user_id = ? AND token = ?", userID, token)
+	row := ur.db.db.QueryRowContext(context.Background(), "SELECT COUNT(1) FROM users_token WHERE user_id = ? AND token = ?", userID, token)
 	if err := row.Scan(&n); err != nil {
 		return false
 	}

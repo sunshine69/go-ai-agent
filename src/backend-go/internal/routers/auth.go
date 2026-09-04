@@ -119,7 +119,7 @@ func (h *authHandler) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	u, err := h.db.Users.getByID(uid)
+	u, err := h.db.Users.GetByID(uid)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "user not found")
 		return
@@ -151,7 +151,7 @@ func (h *authHandler) handleUsers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !requireAdmin(r, h.db, w) {
+	if !requireAdmin(r, h, w) {
 		return
 	}
 	views, err := h.db.Users.UserViews()
@@ -163,12 +163,13 @@ func (h *authHandler) handleUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCreateUser creates a new user (admin only).
+// handleCreateUser creates a new user (admin only).
 func (h *authHandler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !requireAdmin(r, h.db, w) {
+	if !requireAdmin(r, h, w) {
 		return
 	}
 	var req authUserRequest
@@ -189,13 +190,56 @@ func (h *authHandler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.userView(u))
 }
 
-// handleDeleteUser deletes a user by id (admin only).
+// handleRegister is disabled: users may only be created by an admin via
+// POST /api/auth/users (admin-only). This endpoint returns 403 to any caller.
+func (h *authHandler) handleRegister(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusForbidden, "self-registration is disabled; ask an admin to create your account")
+}
+
+// (legacy) handleRegister previously created a new self-registered user and
+// returned an access token for immediate login. It is now disabled (see above).
+func (h *authHandler) handleRegisterDisabled(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req authUserRequest
+	if err := decodeBody(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	username := strings.TrimSpace(req.Username)
+	if username == "" || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "login_name and password are required")
+		return
+	}
+	u, err := h.db.Users.Insert(username, strings.TrimSpace(req.Email), req.Password, false)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	token, err := db.IssueToken(u.ID, db.TokenExpiry)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to issue token")
+		return
+	}
+	if err := h.db.Users.TokenFor(u.ID, token); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to store token")
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_token": token,
+		"token_type":   "bearer",
+		"user":         h.userView(u),
+	})
+}
 func (h *authHandler) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if !requireAdmin(r, h.db, w) {
+	if !requireAdmin(r, h, w) {
 		return
 	}
 	idStr := strings.TrimPrefix(r.URL.Path, "/api/auth/users/")
@@ -226,7 +270,7 @@ func (h *authHandler) handleProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	u, err := h.db.Users.getByID(uid)
+	u, err := h.db.Users.GetByID(uid)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "user not found")
 		return
@@ -257,7 +301,7 @@ func (h *authHandler) handleProfileUpdate(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	u, _ := h.db.Users.getByID(uid)
+	u, _ := h.db.Users.GetByID(uid)
 	writeJSON(w, http.StatusOK, h.userView(u))
 }
 
@@ -282,7 +326,7 @@ func (h *authHandler) handlePasswordChange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	// Re-verify the old password before allowing the change.
-	cur, err := h.db.Users.getByID(uid)
+	cur, err := h.db.Users.GetByID(uid)
 	if err != nil || cur == nil {
 		writeError(w, http.StatusUnauthorized, "current user not found")
 		return

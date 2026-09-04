@@ -20,6 +20,7 @@ import (
 	"strconv"
 
 	"github.com/stevek/go-ai-agent/backend-go/internal/config"
+	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
 	"github.com/stevek/go-ai-agent/backend-go/internal/mcpclient"
 	"github.com/stevek/go-ai-agent/backend-go/internal/ragstore"
@@ -40,6 +41,10 @@ type Handlers struct {
 
 	// Frontend serves the built SPA at the /frontend/* prefix. When nil or
 	// disabled the /frontend/* endpoints are omitted from ServeMux.
+
+	// DB is the application datastore (users, conversations, messages).
+	// When nil the DB-backed endpoints (auth, conversations) are disabled.
+	DB       *db.DB
 	Frontend *serving.Server
 }
 
@@ -57,17 +62,17 @@ func (h Handlers) ServeMux() http.Handler {
 	domains := newDomainsHandler()
 	messages := newMessagesHandler(h)
 	messagesStream := newMessagesStreamHandler(h)
-	conversations := newConversationsHandler()
+	conversations := newConversationsHandler(h.DB)
 	confluence := newConfluenceHandler(h)
 	documents := newDocumentsHandler(h)
 	forms := newFormsHandler(h)
 	processes := newProcessesHandler(h)
-	auth := newAuthHandler()
+	auth := newAuthHandler(h.DB)
 
-	mux.HandleFunc("/api/domains", domains.handle)
-	mux.HandleFunc("/api/messages", messages.handle)
-	mux.HandleFunc("/api/messages/stream", messagesStream.proxyLLMStream) // Direct proxy to LLM
-	mux.HandleFunc("/api/chat/stream", messagesStream.handleStreamChat)   // Alternative SSE format endpoint
+	mux.HandleFunc("/api/domains", requireAuth(domains.handle))
+	mux.HandleFunc("/api/messages", requireAuth(messages.handle))
+	mux.HandleFunc("/api/messages/stream", requireAuth(messagesStream.proxyLLMStream)) // Direct proxy to LLM
+	mux.HandleFunc("/api/chat/stream", requireAuth(messagesStream.handleStreamChat))   // Alternative SSE format endpoint
 	mux.HandleFunc("/api/conversations", conversations.handleListAndCreate)
 	mux.HandleFunc("/api/conversations/", conversations.handleByID)
 	mux.HandleFunc("/api/confluence/search", confluence.handleSearch)
@@ -77,6 +82,14 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("/api/auth/register", auth.handleRegister)
 	mux.HandleFunc("/api/auth/login", auth.handleLogin)
 	mux.HandleFunc("/api/auth/me", auth.handleMe)
+	// --- New DB-backed auth endpoints (multi-user) ---
+	mux.HandleFunc("/api/auth/logout", auth.handleLogout)             // POST
+	mux.HandleFunc("GET /api/auth/users", auth.handleUsers)              // GET (list)
+	mux.HandleFunc("POST /api/auth/users", auth.handleCreateUser)        // POST (create)
+	mux.HandleFunc("/api/auth/users/", auth.handleDeleteUser)        // DELETE /{id}
+	mux.HandleFunc("GET /api/auth/me/profile", auth.handleProfile)       // GET (read)
+	mux.HandleFunc("PATCH /api/auth/me/profile", auth.handleProfileUpdate) // PATCH
+	mux.HandleFunc("/api/auth/me/profile/password", auth.handlePasswordChange) // POST
 
 	// Serve the SPA (if configured) at /frontend/* before the /api/* mux, so
 	// frontend requests are handled by the static file server rather than the

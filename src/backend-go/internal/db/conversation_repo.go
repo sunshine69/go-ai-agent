@@ -1,24 +1,25 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 )
 
 // DBMessage is a single chat turn stored per conversation.
 type DBMessage struct {
-	ID         int64   `json:"id"`
-	ConID      int64   `json:"conversation_id"`
-	Role       string  `json:"role"`
-	Content    string  `json:"content"`
-	Key        string  `json:"key"`
-	Sources    []string `json:"sources"`
-	Confluence []any   `json:"confluence_links"`
+	ID         int64     `json:"id"`
+	ConID      int64     `json:"conversation_id"`
+	Role       string    `json:"role"`
+	Content    string    `json:"content"`
+	Key        string    `json:"key"`
+	Sources    []string  `json:"sources"`
+	Confluence []any     `json:"confluence_links"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
@@ -74,7 +75,7 @@ func trimPrefix(s string) string {
 
 // list returns all of a user's conversations (without messages).
 func (cr *ConversationRepo) list(userID int64) ([]DBConversation, error) {
-	rows, err := cr.db.db.QueryContext(nil, `
+	rows, err := cr.db.db.QueryContext(context.Background(), `
 		SELECT id, user_id, title, created_at, updated_at
 		FROM conversations WHERE user_id = ?
 		ORDER BY updated_at DESC`, userID)
@@ -103,7 +104,7 @@ func (cr *ConversationRepo) list(userID int64) ([]DBConversation, error) {
 
 // loadMessages populates c.Messages from the messages table.
 func (cr *ConversationRepo) loadMessages(c *DBConversation) error {
-	rows, err := cr.db.db.QueryContext(nil, `
+	rows, err := cr.db.db.QueryContext(context.Background(), `
 		SELECT id, conversation_id, role, content, key, sources, confluence, created_at
 		FROM messages WHERE conversation_id = ? ORDER BY rowid`, c.ID)
 	if err != nil {
@@ -144,7 +145,7 @@ func (cr *ConversationRepo) GetConversation(userID int64, convID string) (ConvVi
 	}
 	var c DBConversation
 	var cAt, uAt string
-	row := cr.db.db.QueryRowContext(nil, `
+	row := cr.db.db.QueryRowContext(context.Background(), `
 		SELECT id, user_id, title, created_at, updated_at
 		FROM conversations WHERE id = ? AND user_id = ?`, id, userID)
 	if err := row.Scan(&c.ID, &c.UserID, &c.Title, &cAt, &uAt); err != nil {
@@ -171,7 +172,7 @@ func (cr *ConversationRepo) CreateConversation(userID int64, title string) (Conv
 	if title == "" {
 		title = "Untitled"
 	}
-	res, err := cr.db.db.ExecContext(nil,
+	res, err := cr.db.db.ExecContext(context.Background(),
 		"INSERT INTO conversations (user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
 		userID, title, now, now)
 	if err != nil {
@@ -192,15 +193,15 @@ func (cr *ConversationRepo) DeleteConversation(userID int64, convID string) erro
 	if err != nil {
 		return err
 	}
-	tx, err := cr.db.db.BeginTx(nil, nil)
+	tx, err := cr.db.db.BeginTx(context.Background(), nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(nil, "DELETE FROM messages WHERE conversation_id = ?", id); err != nil {
+	if _, err := tx.ExecContext(context.Background(), "DELETE FROM messages WHERE conversation_id = ?", id); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(nil, "DELETE FROM conversations WHERE id = ? AND user_id = ?", id, userID)
+	res, err := tx.ExecContext(context.Background(), "DELETE FROM conversations WHERE id = ? AND user_id = ?", id, userID)
 	if err != nil {
 		return err
 	}
@@ -213,11 +214,11 @@ func (cr *ConversationRepo) DeleteConversation(userID int64, convID string) erro
 
 // ClearAllConversations removes every conversation for a user.
 func (cr *ConversationRepo) ClearAllConversations(userID int64) error {
-	_, err := cr.db.db.ExecContext(nil, "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)", userID)
+	_, err := cr.db.db.ExecContext(context.Background(), "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)", userID)
 	if err != nil {
 		return err
 	}
-	_, err = cr.db.db.ExecContext(nil, "DELETE FROM conversations WHERE user_id = ?", userID)
+	_, err = cr.db.db.ExecContext(context.Background(), "DELETE FROM conversations WHERE user_id = ?", userID)
 	if err != nil {
 		return err
 	}
@@ -233,7 +234,7 @@ func (cr *ConversationRepo) AppendMessage(userID int64, convID, role, content, k
 
 	// Verify ownership.
 	var owner int64
-	row := cr.db.db.QueryRowContext(nil, "SELECT user_id FROM conversations WHERE id = ?", id)
+	row := cr.db.db.QueryRowContext(context.Background(), "SELECT user_id FROM conversations WHERE id = ?", id)
 	if err := row.Scan(&owner); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrNotFound
@@ -248,19 +249,40 @@ func (cr *ConversationRepo) AppendMessage(userID int64, convID, role, content, k
 	convfluence := marshalJSON(confluenceLinks)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err = cr.db.db.ExecContext(nil,
+	_, err = cr.db.db.ExecContext(context.Background(),
 		"INSERT INTO messages (conversation_id, role, content, key, sources, confluence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		id, role, content, key, srcs, convfluence, now)
 	if err != nil {
 		return err
 	}
-	// Bump updated_at on the conversation.
-	_, _ = cr.db.db.ExecContext(nil, "UPDATE conversations SET updated_at = ? WHERE id = ?", now, id)
+	// Seed a readable conversation title from the first user message.
+	// This restores the pre-multi-user behaviour: the frontend uses the
+	// stored title as the sidebar label for a fresh conversation. Only the
+	// first user turn sets the title; assistant turns never rename it.
+	_, _ = cr.db.db.ExecContext(context.Background(),
+		"UPDATE conversations SET title = ? WHERE id = ? AND title = 'Untitled'",
+		titleFromUserMessage(content), id)
+	_, _ = cr.db.db.ExecContext(context.Background(), "UPDATE conversations SET updated_at = ? WHERE id = ?", now, id)
 	return nil
 }
 
 // --- helpers ---
 
+// titleFromUserMessage derives a short, readable conversation title from the
+// content of the first user message in a conversation. It mirrors the pre-
+// multi-user in-memory backend: words are collapsed (whitespace squeezed), an
+// empty result falls back to "Untitled", and text longer than 60 chars is
+// truncated with a trailing ellipsis.
+func titleFromUserMessage(content string) string {
+	preview := strings.Join(strings.Fields(content), " ")
+	if preview == "" {
+		return "Untitled"
+	}
+	if len(preview) > 60 {
+		preview = preview[:60] + "…"
+	}
+	return preview
+}
 func marshalJSON(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -283,11 +305,11 @@ func unmarshalSource(s string, dst *[]string) {
 }
 func scanMessage(s scanner) (DBMessage, error) {
 	var (
-		m         DBMessage
-		conID     int64
-		sources   string
+		m           DBMessage
+		conID       int64
+		sources     string
 		convfluence []byte
-		createdAt string
+		createdAt   string
 	)
 	if err := s.Scan(&m.ID, &conID, &m.Role, &m.Content, &m.Key, &sources, &convfluence, &createdAt); err != nil {
 		return m, err
@@ -318,6 +340,8 @@ func toConvView(c *DBConversation) ConvView {
 	}
 	if c.Messages == nil {
 		v.Messages = []DBMessage{}
+	} else {
+		v.Messages = c.Messages
 	}
 	return v
 }
