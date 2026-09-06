@@ -90,11 +90,11 @@ func TestDBLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create conv: %v", err)
 	}
-	err = d.Conversations.AppendMessage(admin.ID, c1.ID, "user", "hi there", "", []string{"src"}, []any{"ref1"})
+	err = d.Conversations.AppendMessage(admin.ID, c1.ID, "user", "hi there", "", []string{"src"}, []any{"ref1"}, nil, "")
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	err = d.Conversations.AppendMessage(admin.ID, c1.ID, "assistant", "hello!", "", nil, nil)
+	err = d.Conversations.AppendMessage(admin.ID, c1.ID, "assistant", "hello!", "", nil, nil, nil, "")
 	if err != nil {
 		t.Fatalf("append2: %v", err)
 	}

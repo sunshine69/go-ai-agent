@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 	"github.com/stevek/go-ai-agent/backend-go/internal/context"
+	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
 )
 
@@ -73,6 +73,18 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 	// belongs to another user or was deleted), resolveConversation already
 	// falls back to creating a fresh one.
 
+	// --- Optional model-driven tool-use path -------------------------------
+	// If enabled and the server can call tools, serve this turn through the
+	// tool-use controller instead of the hybrid ContextBuilder+text-injection
+	// path. When handled (or an error occurred), stop here — otherwise fall
+	// through to the hybrid path below. A nil controller (MCP disabled) or a
+	// failed capability probe returns handled=false so the caller keeps the
+	// current behavior.
+	msh := newMessagesStreamHandler(m.h)
+	if handled, _ := msh.runToolUseBlocking(r, conv, msg, req.Domain, req.SubCategory); handled {
+		return
+	}
+
 	// --- Build prior turns for the LLM (cross-turn context) ----------------
 	// Replay every persisted turn EXCEPT the current one (sent in the context
 	// block below). Matches the Python history-building logic.
@@ -132,9 +144,9 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 	// --- Persist the current turn -----------------------------------------
 	// The assistant answer is persisted separately from the user turn.
 	if answer != "" {
-		persistMessage(m.h, r, conv, "assistant", answer, "", sources)
+		persistMessage(m.h, r, conv, "assistant", answer, "", sources, nil, "")
 	}
-	persistMessage(m.h, r, conv, "user", msg, userKey, sources)
+	persistMessage(m.h, r, conv, "user", msg, userKey, sources, nil, "")
 
 	// --- Return the response ------------------------------------------------
 	srcs := sources

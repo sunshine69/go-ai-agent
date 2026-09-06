@@ -57,6 +57,17 @@ type Config struct {
 	CORSAllowHeaders string // Access-Control-Allow-Headers
 	CORSMaxAge       int    // Access-Control-Max-Age (seconds)
 	CORSAllowCreds   bool   // Access-Control-Allow-Credentials: true
+
+	// Feature flags for the model-driven tool-use (function calling) feature.
+	// FEATURE_TOOL_USE selects the mode the message handlers use when a model
+	// turn is served with or without handing tools to the model:
+	//   "false" = hybrid-only: always use ContextBuilder (default baseline)
+	//   "true"  = tool-use-only: always hand tools to the model
+	//   "auto"  = probe-then-use: run the capability probe and pick per-request
+	// MODEL_MAX_TOOL_CALLS caps how many tool-call+re-request rounds the loop
+	// performs for a single user turn (guards against runaway tool loops).
+	FEATURE_TOOL_USE       string
+	MODEL_MAX_TOOL_CALLS   int
 }
 
 func envKey(name, fallback string) string {
@@ -161,6 +172,15 @@ func Load(envDotPath string) *Config {
 	cfg.EmbeddingDim = envInt("EMBEDDING_DIM", 384)
 
 	// --- CORS --------------------------------------------------------------
+	// --- Tool-use feature flags --------------------------------------------
+	// FEATURE_TOOL_USE selects how message handlers serve a model turn with
+	// or without handing MCP tools to the model. The default is "false" (pure
+	// ContextBuilder hybrid) so the switch only turns on when explicitly set.
+	cfg.FEATURE_TOOL_USE = strings.TrimSpace(envKey("FEATURE_TOOL_USE", "false"))
+	cfg.MODEL_MAX_TOOL_CALLS = envInt("MODEL_MAX_TOOL_CALLS", 5)
+	if cfg.MODEL_MAX_TOOL_CALLS <= 0 {
+		cfg.MODEL_MAX_TOOL_CALLS = 5
+	}
 	// Allow the origin to opt out of the CORS middleware, or to pin down
 	// specific values for a tighter security posture.
 	cfg.CORSEnabled = envBool("CORS_ENABLED", true)

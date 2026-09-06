@@ -36,6 +36,11 @@ export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState("");
   const [domains, setDomains] = useState<Domain[]>([]);
+  // Whether the slide-in sidebar is open (mobile only; ignored on desktop
+  // where the sidebar is always visible inline).
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const toggleSidebar = () => setSidebarOpen((v) => !v);
+  const closeSidebar = () => setSidebarOpen(false);
 
   // --- Auth ---
   const { initialized, user, login, logout } = useAuth(API_BASE, () => setNeedLogin(true));
@@ -422,6 +427,23 @@ export default function App() {
 
   return (
     <div className="app-container">
+      {/* Mobile menu toggle — only visible on small screens (see index.css) */}
+      <button
+        className="mobile-menu-btn"
+        onClick={toggleSidebar}
+        aria-label="Toggle menu"
+        type="button"
+      >
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <path d="M3 6h18v2H3zM3 11h18v2H3zM3 16h18v2H3z" />
+        </svg>
+      </button>
+
+      {/* Backdrop shown behind the open sidebar on mobile */}
+      {sidebarOpen && (
+        <div className="sidebar-backdrop" onClick={closeSidebar} />
+      )}
+
       {/* Sidebar */}
       <Sidebar
         apiBaseUrl={API_BASE}
@@ -429,6 +451,8 @@ export default function App() {
         selectedSubCategory={selectedSubCategory}
         conversations={conversations}
         activeConversationId={currentConversationId}
+        sidebarOpen={sidebarOpen}
+        onCloseSidebar={closeSidebar}
         onNewConversation={handleNewConversation}
         onChangeSelection={handleChangeSelection}
         onSelectConversation={handleConversationSelect}

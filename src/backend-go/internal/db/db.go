@@ -14,9 +14,11 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -28,6 +30,7 @@ type DB struct {
 
 	Users       *UserRepo
 	Conversations *ConversationRepo
+	driverName string
 
 	once sync.Once
 }
@@ -61,8 +64,13 @@ func Open(path, driverName string) (*DB, error) {
 	d := &DB{db: database}
 	d.Users = newUserRepo(d)
 	d.Conversations = newConversationRepo(d)
+	d.driverName = driverName
 
 	if err := d.migrate(); err != nil {
+		database.Close()
+		return nil, err
+	}
+	if err := d.migrateSchema(); err != nil {
 		database.Close()
 		return nil, err
 	}
@@ -102,6 +110,8 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE TABLE IF NOT EXISTS messages (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL,
+    tool_calls    TEXT NOT NULL DEFAULT '[]',
+    tool_call_id  TEXT NOT NULL DEFAULT '',
     role           TEXT NOT NULL,
     content        TEXT NOT NULL,
     key            TEXT NOT NULL DEFAULT '',
@@ -117,6 +127,93 @@ CREATE INDEX IF NOT EXISTS idx_messages_conv      ON messages(conversation_id);
 		return fmt.Errorf("migrate: %w", err)
 	}
 	return nil
+}
+
+// migrateSchema repairs a stale schema left behind by an older build.
+//
+// migrate() above only ever runs "CREATE TABLE IF NOT EXISTS", so it can add
+// brand-new tables but can never fix a table that already exists on disk with a
+// stale definition. The code in this repo (see conversation_repo.go) depends on
+// the messages table having tool_calls and tool_call_id columns. If the
+// database file predates the code that needs those columns, those columns are
+// missing, which turns every INSERT/SELECT into a silent failure and makes
+// conversations appear empty — exactly the "back and forth" bug reported for
+// the "MRI test" search.
+//
+// migrateSchema runs on every startup (it is fully idempotent) and adds any
+// column that the current code depends on but that is absent from the live
+// table. It does NOT drop, rename, or rewrite anything, and it never removes a
+// column, so it is safe to run repeatedly.
+func (d *DB) migrateSchema() error {
+	// A non-sqlite driver (e.g. postgres) has its own migration story and the
+	// repo does not use driver-specific column semantics here.
+	if d.driverName != "sqlite3" {
+		return nil
+	}
+
+	// ensureColumn adds a column if it does not already exist. It is a no-op
+	// when the column is already present, so it is safe to call on every start.
+	//
+	// "ALTER ... ADD COLUMN" requires a non-NULL value unless a default is
+	// supplied; every column below carries a default so existing rows are
+	// back-filled safely.
+	ensureColumn := func(table, column, def string) error {
+		exists, err := d.columnExists(table, column)
+		if err != nil {
+			return fmt.Errorf("check %s.%s: %w", table, column, err)
+		}
+		if exists {
+			return nil
+		}
+		stmt := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, def)
+		if _, err := d.db.Exec(stmt); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", table, column, err)
+		}
+		log.Printf("[DB] migrated: added column %s.%s to repair stale schema", table, column)
+		return nil
+	}
+
+	// The messages table is the one that historically fell out of sync with the
+	// code (missing tool_calls / tool_call_id columns). Keep this list in sync
+	// with the columns conversation_repo.go reads and writes.
+	migrations := []struct {
+		table, column, def string
+	}{
+		{"messages", "tool_calls", `TEXT NOT NULL DEFAULT '[]'`},
+		{"messages", "tool_call_id", `TEXT NOT NULL DEFAULT ''`},
+	}
+
+	for _, m := range migrations {
+		if err := ensureColumn(m.table, m.column, m.def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// columnExists reports whether column exists in table for a SQLite database.
+// It returns false if the table does not exist.
+func (d *DB) columnExists(table, column string) (bool, error) {
+	rows, err := d.db.QueryContext(context.Background(),
+		`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // SeedAdmin seeds an admin user with the given password if no admin exists yet.

@@ -76,10 +76,10 @@ func TestConversationClickBlankOnEndToEnd(t *testing.T) {
 	// 3. POST /api/messages to persist a turn (stub LLM returns canned answer)
 	// NOTE: this requires a working LLM. We'll instead directly call the repo
 	// to append a message so we isolate the GET-by-id logic.
-	if err := d.Conversations.AppendMessage(1, newConv.ID, "user", "What is the return policy?", "__current_user__:What is the return policy?", []string{}, nil); err != nil {
+	if err := d.Conversations.AppendMessage(1, newConv.ID, "user", "What is the return policy?", "__current_user__:What is the return policy?", []string{}, nil, nil, ""); err != nil {
 		t.Fatalf("append user message: %v", err)
 	}
-	if err := d.Conversations.AppendMessage(1, newConv.ID, "assistant", "You can return items within 30 days.", "", nil, nil); err != nil {
+	if err := d.Conversations.AppendMessage(1, newConv.ID, "assistant", "You can return items within 30 days.", "", nil, nil, nil, ""); err != nil {
 		t.Fatalf("append assistant message: %v", err)
 	}
 	t.Log("persisted user+assistant messages")

@@ -10,6 +10,8 @@ interface SidebarProps {
   selectedSubCategory: string | null;
   conversations: { id: string; title: string }[];
   activeConversationId: string;
+  sidebarOpen: boolean;
+  onCloseSidebar: () => void;
   onNewConversation: () => void;
   onChangeSelection: () => void;
   onSelectConversation: (id: string) => void;
@@ -27,6 +29,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   selectedSubCategory,
   conversations,
   activeConversationId,
+  sidebarOpen,
+  onCloseSidebar,
   onNewConversation,
   onChangeSelection,
   onSelectConversation,
@@ -50,13 +54,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
     : "";
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`}>
       {/* Header */}
       <div className="sidebar-header">
         <div className="sidebar-header-logo">
           <span className="sidebar-header-logo-icon">⚡</span>
           <span className="sidebar-header-logo-text">SupersonicIQ</span>
         </div>
+        <button
+          className="sidebar-header-close-btn"
+          onClick={onCloseSidebar}
+          aria-label="Close menu"
+          type="button"
+        >
+          <svg
+            className="sidebar-header-close-icon"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+          >
+            <path d="M18.3 5.71L12 12.01l-6.3-6.3-1.42 1.42L10.59 13.4l-6.3 6.3 1.42 1.42L12 14.83l6.3 6.3 1.42-1.42-6.3-6.3 6.3-6.3z" />
+          </svg>
+        </button>
         <button className="sidebar-header-new-btn" onClick={onNewConversation}>
           <svg
             className="sidebar-header-new-icon"

@@ -64,7 +64,7 @@ func persistStreamUserTurn(m *messageStreamHandler, r *http.Request, conv db.Con
 	// Use the conv handed to us by the caller so the user turn lands in the
 	// same conversation as the streamed assistant answer and its title.
 	userKey := "__current_user__:" + msg
-	persistMessage(m.h, r, conv, "user", msg, userKey, nil)
+	persistMessage(m.h, r, conv, "user", msg, userKey, nil, nil, "")
 }
 
 // persistStreamResponse persists the assistant reply for the current streaming
@@ -75,7 +75,7 @@ func persistStreamResponse(m *messageStreamHandler, r *http.Request, conv db.Con
 	if conv.ID == "" || content == "" {
 		return
 	}
-	persistMessage(m.h, r, conv, "assistant", content, "", nil)
+	persistMessage(m.h, r, conv, "assistant", content, "", nil, nil, "")
 }
 
 // clientExtractedContent pulls the text chunk out of an incoming "message"
@@ -160,6 +160,13 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	// Persist the user turn that started this streaming response.
 	persistStreamUserTurn(m, r, conv, msg)
 
+	// Optional model-driven tool-use path: if enabled and the server can call
+	// tools, serve this turn through the tool-use controller instead of the
+	// hybrid ContextBuilder+text-injection path. If handled (or an error
+	// occurred), stop here — otherwise fall through to the hybrid path.
+	if handled, runErr := m.runToolUse(w, r, conv, msg, req.Domain, req.SubCategory); handled || runErr != nil {
+		return
+	}
 	// Build context using ContextBuilder (MCP + RAG)
 	builder := ctxpkg.New(m.h.Cfg, m.h.Manager, m.h.Rag)
 	contextText, sources, confluenceRefs := builder.BuildContext(msg, req.Domain, req.SubCategory)
@@ -176,18 +183,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	}
 
 	// Prepare system prompt
-	sysPrompt := `You are a helpful AI assistant with TWO identities:
-
-## Identity 1: GenIQ (knowledge mode)
-You are an expert knowledge assistant for this organization.
-You answer questions about the organization's procedures, forms, skills, processes, and policies.
-You are thorough, accurate, and cite sources when referencing knowledge base content.
-
-## Identity 2: Friendly Agent (casual mode)
-You are a fun, casual AI assistant.
-You answer general questions, tell jokes, chat, and be helpful in everyday ways.
-You are witty, friendly, and approachable — like a helpful coworker who's also funny.`
-
+sysPrompt := systemPrompt()
 	// Prepare final message with context injection
 	var userMsg string
 	if strings.TrimSpace(contextText) != "" {
@@ -245,6 +241,7 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 		writeSSEError(w, "failed to marshal request")
 		return
 	}
+	log.Printf("[LLM] hybrid stream request: model=%s messages=%d stream=true", m.h.Cfg.LLMModel, len(msgs))
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
@@ -364,6 +361,13 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	// Persist the user turn that started this streaming response.
 	persistStreamUserTurn(m, r, conv, msg)
 
+	// Optional model-driven tool-use path: if enabled and the server can call
+	// tools, serve this turn through the tool-use controller instead of the
+	// hybrid ContextBuilder+text-injection path. If handled (or an error
+	// occurred), stop here — otherwise fall through to the hybrid path.
+	if handled, runErr := m.runToolUse(w, r, conv, msg, req.Domain, req.SubCategory); handled || runErr != nil {
+		return
+	}
 	// Build context using ContextBuilder (MCP + RAG)
 	builder := ctxpkg.New(m.h.Cfg, m.h.Manager, m.h.Rag)
 	contextText, sources, confluenceRefs := builder.BuildContext(msg, req.Domain, req.SubCategory)
@@ -380,17 +384,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	}
 
 	// Prepare system prompt (same as in handleStreamChat)
-	sysPrompt := `You are a helpful AI assistant with TWO identities:
-
-## Identity 1: GenIQ (knowledge mode)
-You are an expert knowledge assistant for this organization.
-You answer questions about the organization's procedures, forms, skills, processes, and policies.
-You are thorough, accurate, and cite sources when referencing knowledge base content.
-
-## Identity 2: Friendly Agent (casual mode)
-You are a fun, casual AI assistant.
-You answer general questions, tell jokes, chat, and be helpful in everyday ways.
-You are witty, friendly, and approachable — like a helpful coworker who's also funny.`
+sysPrompt := systemPrompt()
 
 	// Prepare final message with context injection
 	var userMsg string
@@ -434,7 +428,7 @@ You are witty, friendly, and approachable — like a helpful coworker who's also
 		writeSSEError(w, "failed to marshal request")
 		return
 	}
-
+	log.Printf("[LLM] hybrid stream request: model=%s messages=%d stream=true", m.h.Cfg.LLMModel, len(msgs))
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 

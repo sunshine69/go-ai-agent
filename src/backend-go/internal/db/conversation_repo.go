@@ -13,14 +13,16 @@ import (
 
 // DBMessage is a single chat turn stored per conversation.
 type DBMessage struct {
-	ID         int64     `json:"id"`
-	ConID      int64     `json:"conversation_id"`
-	Role       string    `json:"role"`
-	Content    string    `json:"content"`
-	Key        string    `json:"key"`
-	Sources    []string  `json:"sources"`
-	Confluence []any     `json:"confluence_links"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID         int64            `json:"id"`
+	ConID      int64            `json:"conversation_id"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	Key        string           `json:"key"`
+	Sources    []string         `json:"sources"`
+	Confluence []any            `json:"confluence_links"`
+	ToolCalls  []map[string]any `json:"tool_calls"`
+	ToolCallID string           `json:"tool_call_id"`
+	CreatedAt  time.Time        `json:"created_at"`
 }
 
 // DBConversation is a user's conversation with its persisted messages.
@@ -105,7 +107,7 @@ func (cr *ConversationRepo) list(userID int64) ([]DBConversation, error) {
 // loadMessages populates c.Messages from the messages table.
 func (cr *ConversationRepo) loadMessages(c *DBConversation) error {
 	rows, err := cr.db.db.QueryContext(context.Background(), `
-		SELECT id, conversation_id, role, content, key, sources, confluence, created_at
+		SELECT id, conversation_id, role, content, key, sources, confluence, tool_calls, tool_call_id, created_at
 		FROM messages WHERE conversation_id = ? ORDER BY rowid`, c.ID)
 	if err != nil {
 		return err
@@ -226,7 +228,7 @@ func (cr *ConversationRepo) ClearAllConversations(userID int64) error {
 }
 
 // AppendMessage inserts a message into a conversation owned by the user.
-func (cr *ConversationRepo) AppendMessage(userID int64, convID, role, content, key string, sources []string, confluenceLinks []any) error {
+func (cr *ConversationRepo) AppendMessage(userID int64, convID, role, content, key string, sources []string, confluenceLinks []any, toolCalls []map[string]any, toolCallID string) error {
 	id, err := ConvIDToSeq(convID)
 	if err != nil {
 		return err
@@ -247,11 +249,12 @@ func (cr *ConversationRepo) AppendMessage(userID int64, convID, role, content, k
 
 	srcs := marshalJSON(sources)
 	convfluence := marshalJSON(confluenceLinks)
+	toolJSON := marshalJSON(toolCalls)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = cr.db.db.ExecContext(context.Background(),
-		"INSERT INTO messages (conversation_id, role, content, key, sources, confluence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		id, role, content, key, srcs, convfluence, now)
+		"INSERT INTO messages (conversation_id, role, content, key, sources, confluence, tool_calls, tool_call_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		id, role, content, key, srcs, convfluence, toolJSON, toolCallID, now)
 	if err != nil {
 		return err
 	}
@@ -309,9 +312,11 @@ func scanMessage(s scanner) (DBMessage, error) {
 		conID       int64
 		sources     string
 		convfluence []byte
+		toolCalls   string
+		toolCallID  string
 		createdAt   string
 	)
-	if err := s.Scan(&m.ID, &conID, &m.Role, &m.Content, &m.Key, &sources, &convfluence, &createdAt); err != nil {
+	if err := s.Scan(&m.ID, &conID, &m.Role, &m.Content, &m.Key, &sources, &convfluence, &toolCalls, &toolCallID, &createdAt); err != nil {
 		return m, err
 	}
 	if m.ID == 0 {
@@ -320,6 +325,12 @@ func scanMessage(s scanner) (DBMessage, error) {
 	unmarshalSource(sources, &m.Sources)
 	if len(m.Confluence) == 0 && len(convfluence) > 0 {
 		_ = json.Unmarshal(convfluence, &m.Confluence)
+	}
+	// tool_calls defaults to "[]" in the schema; unmarshal only if non-empty.
+	if toolStr := strings.TrimSpace(toolCalls); toolStr != "" && toolStr != "null" && toolStr != "[]" {
+		if err := json.Unmarshal([]byte(toolStr), &m.ToolCalls); err != nil {
+			m.ToolCalls = nil
+		}
 	}
 	m.ConID = conID
 	return m, nil

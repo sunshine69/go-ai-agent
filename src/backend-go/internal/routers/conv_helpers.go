@@ -13,7 +13,6 @@ import (
 	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 )
 
-
 // derefStr safely dereferences a *string, returning "" when nil.
 func derefStr(p *string) string {
 	if p == nil {
@@ -21,6 +20,7 @@ func derefStr(p *string) string {
 	}
 	return *p
 }
+
 // resolveConversation resolves a conversation for the current user.
 //
 //   - When cid != "" and the conversation is owned by the caller, it returns
@@ -52,7 +52,13 @@ func convExists(conv db.ConvView) bool {
 // persistMessage stores a single turn (user or assistant) in the resolved
 // conversation, scoped to the caller. It is best-effort: persistence failures
 // are swallowed so the LLM answer is still delivered.
-func persistMessage(h Handlers, r *http.Request, conv db.ConvView, role, content, key string, sources []string) {
+//
+// For an assistant turn, toolCalls records the OpenAI-style tool_calls the model
+// emitted that turn (the SPA replays them when the user reopens the
+// conversation). toolCallID links a subsequent "tool" role turn to its
+// originating "assistant" tool_calls entry so tool-use turns are stored in
+// chronological order in the returned history.
+func persistMessage(h Handlers, r *http.Request, conv db.ConvView, role, content, key string, sources []string, toolCalls []map[string]any, toolCallID string) {
 	dbStore := h.DB
 	if dbStore == nil || dbStore.Conversations == nil || conv.ID == "" {
 		return
@@ -62,5 +68,5 @@ func persistMessage(h Handlers, r *http.Request, conv db.ConvView, role, content
 	for _, m := range conv.Messages {
 		convfluence = append(convfluence, m.Confluence)
 	}
-	_ = dbStore.Conversations.AppendMessage(uid, conv.ID, role, content, key, sources, convfluence)
+	_ = dbStore.Conversations.AppendMessage(uid, conv.ID, role, content, key, sources, convfluence, toolCalls, toolCallID)
 }
