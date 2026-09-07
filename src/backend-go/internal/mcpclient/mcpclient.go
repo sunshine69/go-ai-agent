@@ -130,27 +130,160 @@ func (s *sseReadWriteCloser) Write(p []byte) (int, error) {
 	return len(p), nil // No-op
 }
 
-func NewManager(mcpServerPath, mcpWorkDir string) (newMCP *ResilientMCPClient) {
-	var err error
+// MCPManagerConfig holds everything NewManager needs to choose a transport
+// and to filter tool names. Priority: MCP_ENDPOINT (streamable HTTP) >
+// MCP_TOOL_EXEC_CMD (verbatim command launch) > MCP_SERVER_PATH (legacy stdio).
+type MCPManagerConfig struct {
+	MCPServerPath  string
+	MCPWorkDir     string
+	MCPToolExecCmd string
+	MCPServerURL   string
+	MCPBlockList   string
+}
 
-	switch {
-	case strings.HasPrefix(mcpServerPath, "http"):
-		raw, e := ConnectStreamableHTTP(mcpServerPath)
+// compileBlockList parses a comma-separated block-list string into a slice of
+// compiled regular expressions. An empty/whitespace-only string yields a nil
+// slice (i.e. nothing blocked). Matching is applied to the tool's Name.
+func compileBlockList(blockedPatternsStr string) []*regexp.Regexp {
+	if strings.TrimSpace(blockedPatternsStr) == "" {
+		return nil
+	}
+
+	segments := strings.Split(blockedPatternsStr, ",")
+	var activeRegexes []*regexp.Regexp
+
+	for _, segment := range segments {
+		cleanPattern := strings.TrimSpace(segment)
+		if cleanPattern == "" {
+			continue
+		}
+		// If the literal does not compile as a regex, treat it as a plain
+		// substring match so operators can pass simple tool-name filters.
+		if expr, err := regexp.Compile(cleanPattern); err == nil {
+			activeRegexes = append(activeRegexes, expr)
+			continue
+		}
+		activeRegexes = append(activeRegexes, regexp.MustCompile(regexp.QuoteMeta(cleanPattern)))
+	}
+
+	return activeRegexes
+}
+
+// toolIsBlocked reports whether the tool name matches any block-list pattern.
+func toolIsBlocked(re []*regexp.Regexp, name string) bool {
+	for _, expr := range re {
+		if expr.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyBlockFilter returns only the tools whose names are not blocked.
+func applyBlockFilter(allTools []mcpTool, re []*regexp.Regexp) []mcpTool {
+	if len(re) == 0 {
+		return allTools
+	}
+	var allowed []mcpTool
+	for _, tool := range allTools {
+		if toolIsBlocked(re, tool.Name) {
+			continue
+		}
+		allowed = append(allowed, tool)
+	}
+	return allowed
+}
+
+// expandCmd expands a verbatim command template into exec arguments.
+// Tokens ${tool}, ${args}, ${workdir} are substituted. The remainder after
+// substitution is split on whitespace into individual argv entries.
+//
+// This lets operators launch a stdio MCP server with arbitrary options, e.g.:
+//
+//	MCP_TOOL_EXEC_CMD="python3 -m my_mcp_server ${args} --workdir ${workdir}"
+//	MCP_TOOL_EXEC_CMD="node --max-old-space-size=2048 ./server.js"
+func expandCmd(template, defaultServerPath, workdir string) ([]string, error) {
+	// First, expand ${args} if present. ${args} falls back to defaultServerPath
+	// (the legacy MCP_SERVER_PATH) when the template does not reference it.
+	args := defaultServerPath
+	expanded := template
+	if strings.Contains(expanded, "${args}") {
+		expanded = strings.ReplaceAll(expanded, "${args}", args)
+	} else if strings.Contains(expanded, "${tool}") {
+		expanded = strings.ReplaceAll(expanded, "${tool}", defaultServerPath)
+	}
+	if strings.Contains(expanded, "${workdir}") {
+		expanded = strings.ReplaceAll(expanded, "${workdir}", workdir)
+	}
+	expanded = strings.ReplaceAll(expanded, "${tool}", defaultServerPath)
+	expanded = strings.ReplaceAll(expanded, "${args}", args)
+	expanded = strings.ReplaceAll(expanded, "${workdir}", workdir)
+
+	fields := strings.Fields(expanded)
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("command template expanded to empty")
+	}
+	return fields, nil
+}
+
+// NewManager selects a transport and returns a resilient MCP client.
+//
+// Priority (highest first):
+//  1. MCP_ENDPOINT  — streamable-HTTP endpoint (http://host:port/mcp).
+//  2. MCP_TOOL_EXEC_CMD — verbatim command template executed to launch stdio.
+//  3. MCP_SERVER_PATH — legacy whitespace-split stdio command.
+//
+// MCP_BLOCK_LIST (comma-separated regex/substring tool-name filters) is applied
+// by the returned client in both Tools() and CallTool().
+func NewManager(cfg MCPManagerConfig) (newMCP *ResilientMCPClient) {
+	// Priority 1: streamable HTTP endpoint. MCP_ENDPOINT always wins.
+	if url := strings.TrimSpace(cfg.MCPServerURL); url != "" {
+		if !strings.HasPrefix(url, "http") {
+			fmt.Fprintf(os.Stderr, "⚠️  MCP_ENDPOINT %q does not start with http:// or https://; ignoring\n", url)
+		} else {
+			raw, e := ConnectStreamableHTTP(url)
+			if e != nil {
+				fmt.Fprintf(os.Stderr, "❌ MCP connect failed: %v\n", e)
+				return nil
+			}
+			m := NewResilientPassthrough(raw)
+			m.blockRe = compileBlockList(cfg.MCPBlockList)
+			fmt.Fprintf(os.Stderr, "🌐 MCP connected via Streamable HTTP at %s\n", url)
+			return m
+		}
+	}
+
+	// Priority 2: verbatim command template for stdio.
+	cmd := strings.TrimSpace(cfg.MCPToolExecCmd)
+	if cmd != "" {
+		parts, e := expandCmd(cmd, cfg.MCPServerPath, cfg.MCPWorkDir)
+		if e != nil {
+			fmt.Fprintf(os.Stderr, "❌ MCP command template expansion failed: %v\n", e)
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "🚀 Launching MCP server: %v\n", parts)
+		m, e := NewResilientStdio(parts)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "❌ MCP connect failed: %v\n", e)
-			return
+			return nil
 		}
-		newMCP, err = NewResilientPassthrough(raw), e
-	default:
-		fmt.Fprintf(os.Stderr, "🚀 Launching MCP stdio server: %s\n", mcpServerPath)
-		newMCP, err = NewResilientStdio(strings.Fields(mcpServerPath))
+		m.blockRe = compileBlockList(cfg.MCPBlockList)
+		return m
 	}
 
+	// Priority 3: legacy whitespace-split stdio command.
+	if cfg.MCPServerPath == "" {
+		return nil
+	}
+	parts := strings.Fields(cfg.MCPServerPath)
+	fmt.Fprintf(os.Stderr, "🚀 Launching MCP stdio server: %v\n", parts)
+	m, err := NewResilientStdio(parts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ MCP connect failed: %v\n", err)
-		return
+		return nil
 	}
-	return newMCP
+	m.blockRe = compileBlockList(cfg.MCPBlockList)
+	return m
 }
 
 // ConnectStreamableHTTP connects to a modern MCP server using the Streamable HTTP
@@ -357,6 +490,7 @@ func (c *MCPClient) call(method string, params interface{}) (*jsonRPCResponse, e
 // ---------------------------------------------------------------------------
 // MCP protocol handshake
 // ---------------------------------------------------------------------------
+
 func (c *MCPClient) Initialize() error {
 	// params := map[string]interface{}{
 	// 	"protocolVersion": "2024-11-05",
@@ -559,12 +693,18 @@ type MCPClientIface interface {
 }
 
 type ResilientMCPClient struct {
-	mu       sync.Mutex
-	Inner    *MCPClient
-	parts    []string
-	maxRetry int
-	backoff  time.Duration
-	Spec     string
+	// blockRe holds the compiled regexes/substring filters from MCP_BLOCK_LIST.
+	// A tool whose name matches any of them is filtered out of Tools() and
+	// rejected by CallTool(). Nil/empty means no blocking.
+	blockRe []*regexp.Regexp
+	mu      sync.Mutex
+	Inner   *MCPClient
+	parts   []string
+	// For reconnect, the argv used to launch the stdio server.
+	partsForConnect []string
+	maxRetry        int
+	backoff         time.Duration
+	Spec            string
 }
 
 func NewResilientStdio(parts []string) (*ResilientMCPClient, error) {
@@ -573,11 +713,11 @@ func NewResilientStdio(parts []string) (*ResilientMCPClient, error) {
 		return nil, err
 	}
 	return &ResilientMCPClient{
-		Inner:    inner,
-		parts:    parts,
-		maxRetry: 3,
-		backoff:  500 * time.Millisecond,
-		Spec:     inner.spec,
+		Inner:           inner,
+		partsForConnect: parts,
+		maxRetry:        3,
+		backoff:         500 * time.Millisecond,
+		Spec:            inner.spec,
 	}, nil
 }
 
@@ -586,7 +726,7 @@ func NewResilientPassthrough(c *MCPClient) *ResilientMCPClient {
 }
 
 func (r *ResilientMCPClient) reconnect() error {
-	if r.parts == nil {
+	if len(r.partsForConnect) == 0 {
 		return fmt.Errorf("reconnect not supported for non-stdio connections")
 	}
 	if r.Inner != nil {
@@ -595,7 +735,7 @@ func (r *ResilientMCPClient) reconnect() error {
 	fmt.Fprintln(os.Stderr, "🔄 MCP server died — reconnecting…")
 	var lastErr error
 	for attempt := 1; attempt <= r.maxRetry; attempt++ {
-		c, err := ConnectStdio(r.parts)
+		c, err := ConnectStdio(r.partsForConnect)
 		if err == nil {
 			r.Inner = c
 			fmt.Fprintf(os.Stderr, "✅ MCP reconnected (attempt %d)\n", attempt)
@@ -619,7 +759,15 @@ func isDeadErr(err error) bool {
 		strings.Contains(msg, "file already closed")
 }
 
+// CallTool invokes a named MCP tool with the given arguments (JSON-encoded map).
+// Names in the MCP_BLOCK_LIST are rejected before any network call.
 func (r *ResilientMCPClient) CallTool(name string, arguments map[string]interface{}) (string, error) {
+	// Block-list enforcement: reject a blocked tool name early with a clear
+	// message rather than hitting the server and relying on its error.
+	if toolIsBlocked(r.blockRe, name) {
+		return "", fmt.Errorf("tool %q is blocked by MCP_BLOCK_LIST", name)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -627,7 +775,7 @@ func (r *ResilientMCPClient) CallTool(name string, arguments map[string]interfac
 	if err == nil {
 		return result, nil
 	}
-	if !isDeadErr(err) || r.parts == nil {
+	if !isDeadErr(err) || len(r.partsForConnect) == 0 {
 		return "", err
 	}
 
@@ -637,10 +785,13 @@ func (r *ResilientMCPClient) CallTool(name string, arguments map[string]interfac
 	return r.Inner.CallTool(name, arguments)
 }
 
+// Tools returns the list of available MCP tools minus any blocked by
+// MCP_BLOCK_LIST.
 func (r *ResilientMCPClient) Tools() []mcpTool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.Inner.Tools()
+	all := r.Inner.Tools()
+	return applyBlockFilter(all, r.blockRe)
 }
 
 func (r *ResilientMCPClient) Resources() ([]mcpResource, error) {
@@ -702,44 +853,4 @@ func ConnectStdio(parts []string) (*MCPClient, error) {
 		return nil, err
 	}
 	return c, nil
-}
-
-// parseAndFilterToolsRegex treats each comma-separated segment as a regex pattern.
-// If a tool name matches any of the patterns, it will be blocked.
-func parseAndFilterToolsRegex(allTools []mcpTool, blockedPatternsStr string) []mcpTool {
-	if strings.TrimSpace(blockedPatternsStr) == "" {
-		return allTools
-	}
-
-	segments := strings.Split(blockedPatternsStr, ",")
-	var activeRegexes []*regexp.Regexp
-
-	for _, segment := range segments {
-		cleanPattern := strings.TrimSpace(segment)
-		if cleanPattern == "" {
-			continue
-		}
-		if expr, err := regexp.Compile(cleanPattern); err == nil {
-			activeRegexes = append(activeRegexes, expr)
-		}
-	}
-
-	var allowedTools []mcpTool
-	for _, tool := range allTools {
-		isBlocked := false
-
-		for _, expr := range activeRegexes {
-			if expr.MatchString(tool.Name) {
-				isBlocked = true
-				break
-			}
-		}
-
-		if isBlocked {
-			continue
-		}
-		allowedTools = append(allowedTools, tool)
-	}
-
-	return allowedTools
 }

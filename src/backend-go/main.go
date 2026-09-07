@@ -59,7 +59,13 @@ func main() {
 	// --- MCP manager -------------------------------------------------------
 	var manager *mcpclient.ResilientMCPClient
 	if cfg.MCPEnabled {
-		manager = mcpclient.NewManager(cfg.MCPServerPath, cfg.MCPWorkDir)
+		manager = mcpclient.NewManager(mcpclient.MCPManagerConfig{
+			MCPServerPath:  cfg.MCPServerPath,
+			MCPWorkDir:     cfg.MCPWorkDir,
+			MCPToolExecCmd: cfg.MCPToolExecCmd,
+			MCPServerURL:   cfg.MCPServerURL,
+			MCPBlockList:   cfg.MCPBlockList,
+		})
 		if manager == nil {
 			// NewManager returns nil on failure (e.g. MCP binary not found).
 			// Treat it as "MCP unavailable" rather than panicking so the HTTP
