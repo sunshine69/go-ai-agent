@@ -154,6 +154,28 @@ export async function getJSON<T>(
   return (await res.json()) as T;
 }
 
+/**
+ * Bulk-deletes conversations (multi-select) — POST /api/conversations/bulk-delete.
+ * Returns the number of conversations actually deleted. Non-owned or malformed
+ * ids are silently ignored by the backend rather than treated as an error.
+ */
+export async function deleteConversations(
+  apiBaseUrl: string,
+  ids: string[]
+): Promise<number> {
+  const res = await fetchWithToken(apiBaseUrl, {
+    url: "/api/conversations/bulk-delete",
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorText(res));
+  }
+  const data = (await res.json()) as { deleted?: number };
+  return data.deleted ?? 0;
+}
+
 /** Minimal DELETE helper using fetchWithToken. */
 export async function deleteJSON(
   apiBaseUrl: string,

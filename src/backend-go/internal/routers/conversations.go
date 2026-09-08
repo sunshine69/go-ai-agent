@@ -5,6 +5,7 @@
 // GET /api/conversations/{id}      (authed)  -> full conversation (only its own)
 // DELETE /api/conversations/{id}   (authed)  -> ok (only its own)
 // DELETE /api/conversations        (authed)  -> clear user's own conversations
+// POST  /api/conversations/bulk-delete  (authed) -> {"ids":[...]} multi-select delete
 //
 // Every conversation is owned by a single user id; other users cannot read,
 // modify, or delete it. The conversation id returned to the client is the raw
@@ -131,6 +132,39 @@ func (h *conversationsHandler) handleClearAll(w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusOK, map[string]any{
 		"message": "Conversations cleared",
 	})
+}
+
+// handleDeleteMany serves POST /api/conversations/bulk-delete. The body is
+// {"ids": ["<id1>", "<id2>", ...]}. Each id is scoped to the caller: ids that
+// are not owned by the caller (or that are malformed/unknown) are silently
+// ignored. It returns the number of conversations actually deleted.
+func (h *conversationsHandler) handleDeleteMany(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	uid, ok := currentUserID(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var body struct {
+		Ids []string `json:"ids"`
+	}
+	if err := decodeBody(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(body.Ids) == 0 {
+		writeError(w, http.StatusBadRequest, "no ids provided")
+		return
+	}
+	deleted, err := h.db.Conversations.DeleteMany(uid, body.Ids)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete conversations")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"message": "Conversations deleted", "deleted": deleted})
 }
 
 func (h *conversationsHandler) toPublicView(v db.ConvView) convPublicView {

@@ -14,6 +14,8 @@ const API_BASE =
   (import.meta.env.VITE_BACKEND_URL as string) || "";
 
 interface Conversation {
+  created_at: string;
+  updated_at: string;
   id: string;
   title: string;
 }

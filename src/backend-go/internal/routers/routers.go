@@ -75,6 +75,7 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("/api/chat/stream", requireAuth(messagesStream.handleStreamChat))   // Alternative SSE format endpoint
 	mux.HandleFunc("/api/conversations", conversations.handleListAndCreate)            // GET (list), POST (create)
 	mux.HandleFunc("DELETE /api/conversations", conversations.handleClearAll)          // DELETE (clear all) — no trailing slash, method-specific pattern wins
+	mux.HandleFunc("POST /api/conversations/bulk-delete", conversations.handleDeleteMany) // multi-select delete
 	mux.HandleFunc("/api/conversations/", conversations.handleByID)                    // GET, DELETE /{id} (a single conversation)
 	mux.HandleFunc("/api/confluence/search", confluence.handleSearch)
 	mux.HandleFunc("/api/documents/", documents.handle)

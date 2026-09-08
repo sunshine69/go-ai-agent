@@ -1,14 +1,22 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { Domain } from "../types";
 import { AuthUser } from "../utils/token";
+import { deleteConversations } from "../utils/api";
 import { ChangePassword } from "./ChangePassword";
 import { UserManagement } from "./UserManagement";
+
+interface Conversation {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
 
 interface SidebarProps {
   apiBaseUrl: string;
   selectedDomain: Domain | null;
   selectedSubCategory: string | null;
-  conversations: { id: string; title: string }[];
+  conversations: Conversation[];
   activeConversationId: string;
   sidebarOpen: boolean;
   onCloseSidebar: () => void;
@@ -21,6 +29,25 @@ interface SidebarProps {
   domains: Domain[];
   user: AuthUser | null;
   onLogout: () => Promise<void> | void;
+}
+
+// Format an ISO/RFC3339 timestamp into a compact single-line, human-readable
+// label. Falls back to "Unknown date" when the value is missing or unparyseable
+// (e.g. "Mon 3 Jan 2025, 14:05" in local time).
+function formatConvDateTime(iso: string): string {
+  if (!iso) return "Unknown date";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Unknown date";
+  const dateStr = d.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const timeStr = d.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  return `${dateStr}, ${timeStr}`;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -42,8 +69,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
 }) => {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
-  const [showAllConversations, setShowAllConversations] = useState(false);
   const [showUserPanel, setShowUserPanel] = useState(false);
+
+  // Search / sort UI for the conversation list.
+  const [showAllConversations, setShowAllConversations] = useState(false);
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<"updated" | "created" | "title">("updated");
+  const [selectedConvs, setSelectedConvs] = useState<Record<string, boolean>>({});
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteMsg, setDeleteMsg] = useState("");
 
   const currentScope = selectedDomain
     ? `${selectedDomain.icon} ${selectedDomain.display_name}${
@@ -52,6 +86,67 @@ export const Sidebar: React.FC<SidebarProps> = ({
           : ""
       }`
     : "";
+
+  // Search filtering + sort, computed each render. Search matches against the
+  // title and the raw id so users can find a conv by typing part of either.
+  const filteredConvs = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    const base = term
+      ? conversations.filter((c) =>
+          [c.title, c.id].some((f) => f.toLowerCase().includes(term))
+        )
+      : [...conversations];
+
+    if (sort === "title") {
+      return base.sort((a, b) =>
+        (a.title || "Untitled").localeCompare(b.title || "Untitled")
+      );
+    }
+    // "updated" (default) and "created" both use descending (newest first),
+    // matching the backend ORDER BY updated_at DESC.
+    const key = sort === "created" ? "created_at" : "updated_at";
+    return base.sort((a, b) => {
+      const ta = new Date(a[key]).getTime();
+      const tb = new Date(b[key]).getTime();
+      return tb - ta;
+    });
+  }, [conversations, search, sort]);
+
+  const selectedIds = useMemo(
+    () => Object.keys(selectedConvs).filter((id) => selectedConvs[id]),
+    [selectedConvs]
+  );
+  const canMultiDelete = selectedIds.length > 0;
+
+  const toggleSelect = (id: string) => {
+    setSelectedConvs((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+  const toggleSelectAll = () => {
+    const allSelected = filteredConvs.every((c) => selectedConvs[c.id]);
+    const next: Record<string, boolean> = {};
+    for (const c of filteredConvs) next[c.id] = !allSelected;
+    setSelectedConvs((prev) => ({ ...prev, ...next }));
+  };
+  const clearSelection = () => setSelectedConvs({});
+
+  const handleMultiDelete = async () => {
+    if (selectedIds.length === 0) return;
+    const n = selectedIds.length;
+    setDeleteMsg(`Deleting ${n} conversation${n === 1 ? "" : "s"}…`);
+    setIsDeleting(true);
+    try {
+      await deleteConversations(apiBaseUrl, selectedIds);
+      // Refresh the list and drop the deleted entries from state.
+      for (const id of selectedIds) onDeleteConversation(id);
+      setSelectedConvs({});
+    } catch {
+      // Errors are surfaced by the component; swallow here and keep the
+      // selection so the user can retry.
+    } finally {
+      setIsDeleting(false);
+      setDeleteMsg("");
+    }
+  };
 
   return (
     <aside className={`sidebar ${sidebarOpen ? "is-open" : ""}`}>
@@ -137,47 +232,166 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </button>
           )}
         </div>
-        {showAllConversations ? (
-          <div className="sidebar-conversations">
-            {conversations.map((conv) => (
-              <div
-                key={conv.id}
-                className={`sidebar-conversation ${
-                  conv.id === activeConversationId ? "active" : ""
-                }`}
-                onClick={() => onSelectConversation(conv.id)}
-              >
-                <span className="sidebar-conversation-text">
-                  {conv.title || "Untitled"}
-                </span>
-                {conv.id === activeConversationId && (
+        {showAllConversations && (
+          <>
+            {/* Search + sort toolbar */}
+            <div className="sidebar-conversation-controls">
+              {/* Search */}
+              <div className="sidebar-conversation-search">
+                <svg
+                  className="sidebar-conversation-search-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  aria-hidden="true"
+                >
+                  <circle cx="11" cy="11" r="7" />
+                  <path d="M21 21l-4.3-4.3" />
+                </svg>
+                <input
+                  className="sidebar-conversation-search-input"
+                  type="text"
+                  placeholder="Search conversations…"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  aria-label="Search conversations"
+                />
+                {search && (
                   <button
-                    className="sidebar-conversation-delete"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDeleteConfirm(conv.id);
-                    }}
+                    className="sidebar-conversation-search-clear"
+                    onClick={() => setSearch("")}
+                    aria-label="Clear search"
+                    type="button"
                   >
-                    🗑️
+                    ✕
                   </button>
                 )}
               </div>
-            ))}
-          </div>
-        ) : (
-          conversations.length > 0 && (
-            <button
-              className="sidebar-conversation sidebar-conversation-active"
-              onClick={() =>
-                onSelectConversation(activeConversationId || conversations[0].id)
-              }
-            >
-              <span className="sidebar-conversation-text">
-                {conversations.find((c) => c.id === activeConversationId)
-                  ?.title || "Active"}
-              </span>
-            </button>
-          )
+
+              {/* Sort */}
+              <div className="sidebar-conversation-sort">
+                <label
+                  className="sidebar-conversation-sort-label"
+                  htmlFor="conv-sort-select"
+                >
+                  Sort
+                </label>
+                <select
+                  id="conv-sort-select"
+                  className="sidebar-conversation-sort-select"
+                  value={sort}
+                  onChange={(e) =>
+                    setSort(e.target.value as "updated" | "created" | "title")
+                  }
+                >
+                  <option value="updated">Last updated</option>
+                  <option value="created">Created</option>
+                  <option value="title">Name</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Selection toolbar + list (multi-select delete + counts) */}
+            <div className="sidebar-conversation-list-header">
+              <label className="sidebar-conversation-select-all">
+                <input
+                  type="checkbox"
+                  checked={filteredConvs.length > 0 && filteredConvs.every((c) => selectedConvs[c.id])}
+                  onChange={toggleSelectAll}
+                  aria-label="Select all shown"
+                />
+              </label>
+              <div className="sidebar-conversation-list-count">
+                {filteredConvs.length} of {conversations.length}
+                {search ? " matched" : ""}
+              </div>
+              {canMultiDelete && !isDeleting && (
+                <button
+                  className="sidebar-conversation-multi-delete"
+                  onClick={handleMultiDelete}
+                  title={`Delete ${selectedIds.length} selected conversation${selectedIds.length === 1 ? "" : "s"}`}
+                >
+                  Delete ({selectedIds.length})
+                </button>
+              )}
+              {isDeleting && <span className="sidebar-conversation-deleting">{deleteMsg}</span>}
+              {!canMultiDelete && !isDeleting && selectedIds.length > 0 && (
+                <button
+                  className="sidebar-conversation-clear-selection"
+                  onClick={clearSelection}
+                >
+                  Clear selection
+                </button>
+              )}
+            </div>
+
+            {filteredConvs.length === 0 && (
+              <div className="sidebar-conversations-empty">
+                {conversations.length === 0
+                  ? "No conversations yet"
+                  : "No conversations match your search"}
+              </div>
+            )}
+
+            <div className="sidebar-conversations">
+              {filteredConvs.map((conv) => {
+                const isActive = conv.id === activeConversationId;
+                const isSel = !!selectedConvs[conv.id];
+                const dateTime = formatConvDateTime(
+                  sort === "created" ? conv.created_at : conv.updated_at
+                );
+                return (
+                  <div
+                    key={conv.id}
+                    className={`sidebar-conversation${isActive ? " active" : ""}${isSel ? " selected" : ""}`}
+                  >
+                    {/* Select checkbox */}
+                    <label className="sidebar-conversation-select" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={isSel}
+                        onChange={() => toggleSelect(conv.id)}
+                        aria-label={`Select ${conv.title || "conversation"}`}
+                      />
+                    </label>
+
+                    {/* Body: click to open (also clears selection if in multi-select mode) */}
+                    <button
+                      className="sidebar-conversation-body"
+                      onClick={() => {
+                        if (selectedIds.length > 0) clearSelection();
+                        onSelectConversation(conv.id);
+                      }}
+                      type="button"
+                    >
+                      <span className="sidebar-conversation-text">
+                        {conv.title || "Untitled"}
+                      </span>
+                      <span className="sidebar-conversation-datetime" title={dateTime}>
+                        {dateTime}
+                      </span>
+                    </button>
+
+                    {/* Single-delete button (only when not in multi-select mode) */}
+                    {!canMultiDelete && (
+                      <button
+                        className="sidebar-conversation-delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteConfirm(conv.id);
+                        }}
+                        aria-label={`Delete ${conv.title || "conversation"}`}
+                        type="button"
+                      >
+                        🗑️
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
         {conversations.length === 0 && (
           <div className="sidebar-conversations-empty">

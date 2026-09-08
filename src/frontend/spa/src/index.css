@@ -365,7 +365,7 @@ body {
 .sidebar-section-title {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: #86efac;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -430,6 +430,7 @@ body {
   cursor: pointer;
   transition: background 0.2s;
   gap: 8px;
+  color: var(--text-primary);
 }
 
 .sidebar-conversation:hover {
@@ -443,12 +444,45 @@ body {
 
 .sidebar-conversation-text {
   font-size: 13px;
+  font-weight: 500;
+  color: #4ade80;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
 }
 
+
+.sidebar-conversation-body {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  width: 100%;
+  text-align: left;
+  border-radius: 4px;
+}
+
+.sidebar-conversation-body:focus {
+  outline: none;
+}
+
+.sidebar-conversation-datetime {
+  font-size: 11px;
+  color: #a9b7c9;
+  white-space: nowrap;
+  flex-shrink: 0;
+  opacity: 1;
+}
+
+.sidebar-conversation.active .sidebar-conversation-datetime {
+  color: rgba(255, 255, 255, 0.8);
+}
 .sidebar-conversation-delete {
   background: none;
   border: none;
@@ -552,6 +586,147 @@ body {
   color: var(--error-color);
 }
 
+
+/* Conversation search + sort toolbar */
+.sidebar-conversation-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sidebar-conversation-search {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-conversation-search-icon {
+  position: absolute;
+  left: 8px;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.sidebar-conversation-search-input {
+  width: 100%;
+  padding: 6px 28px 6px 28px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-color);
+  font-size: 13px;
+}
+
+.sidebar-conversation-search-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+}
+
+.sidebar-conversation-search-clear {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.sidebar-conversation-search-clear:hover {
+  color: var(--text-color);
+}
+
+.sidebar-conversation-sort {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar-conversation-sort-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.sidebar-conversation-sort-select {
+  padding: 6px 6px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-color);
+  font-size: 12px;
+}
+
+.sidebar-conversation-list-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.sidebar-conversation-select-all {
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-conversation-list-count {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.sidebar-conversation-clear-selection {
+  background: none;
+  border: none;
+  color: var(--primary-color);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.sidebar-conversation-clear-selection:hover {
+  color: var(--text-color);
+}
+
+.sidebar-conversation-multi-delete {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--error-color);
+  color: var(--error-color);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.sidebar-conversation-multi-delete:hover {
+  background: var(--error-color);
+  color: white;
+}
+
+.sidebar-conversation-deleting {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--error-color);
+}
+
+.sidebar-conversation-select {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+
+.sidebar-conversation-select input {
+  cursor: pointer;
+}
+
+.sidebar-conversation.selected {
+  background: rgba(59, 130, 246, 0.12);
+}
 /* Main content */
 .main-content {
   flex: 1;

@@ -189,6 +189,51 @@ func (cr *ConversationRepo) CreateConversation(userID int64, title string) (Conv
 	return toConvView(&c), nil
 }
 
+// DeleteMany removes multiple conversations owned by userID in a single
+// transaction. The provided ids may be "CONV-<n>" style ids or bare numbers;
+// non-integer and unknown ids are ignored rather than treated as errors.
+// It returns the number of conversations actually deleted.
+func (cr *ConversationRepo) DeleteMany(userID int64, ids []string) (int64, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	var deleted int64
+	tx, err := cr.db.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for _, raw := range ids {
+		id, err := ConvIDToSeq(raw)
+		if err != nil {
+			continue // skip malformed ids
+		}
+		// Verify ownership before deleting so a caller can never touch another
+		// user's conversation.
+		var owner int64
+		row := tx.QueryRowContext(context.Background(),
+			"SELECT user_id FROM conversations WHERE id = ?", id)
+		if err := row.Scan(&owner); err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			return 0, err
+		}
+		if owner != userID {
+			continue
+		}
+		if _, err := tx.ExecContext(context.Background(),
+			"DELETE FROM messages WHERE conversation_id = ?", id); err != nil {
+			return 0, err
+		}
+		if _, err := tx.ExecContext(context.Background(),
+			"DELETE FROM conversations WHERE id = ? AND user_id = ?", id, userID); err != nil {
+			return 0, err
+		}
+		deleted++
+	}
+	return deleted, tx.Commit()
+}
 // DeleteConversation removes a conversation (owned by userID).
 func (cr *ConversationRepo) DeleteConversation(userID int64, convID string) error {
 	id, err := ConvIDToSeq(convID)
