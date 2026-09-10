@@ -106,14 +106,24 @@ func (t *ToolUse) Run(ctx context.Context, messages []llm.ChatMessage, sink func
 			log.Printf("[TOOL-USE] turn %d: sending question to model with no tools", turn)
 		}
 
-		// Stream this turn's response. StreamTurn performs a single streaming
-		// HTTP request, emitting each text token through sink (real-time) and
-		// accumulating the model's tool_calls so we know whether to loop.
+		// Log the stream result before continuing so we never show only a
+		// "sending question" line with no outcome (fixes silent failures).
 		res, err := t.llmClient.StreamTurn(ctx, reqBody, sink)
 		if err != nil {
-			return RunResult{}, fmt.Errorf("error talking to model: %s", err.Error())
+			log.Printf("[TOOL-USE] turn %d: model response error: %v", turn, err)
+			return RunResult{Err: fmt.Sprintf("%s", err.Error()), FinalAnswer: finalAnswer.String()},
+				fmt.Errorf("error talking to model: %s", err.Error())
 		}
 
+		// Log the outcome of the turn: either the model asked for tools or it
+		// produced the final streamed answer (possibly empty if choked).
+		if len(res.ToolCalls) > 0 {
+			log.Printf("[TOOL-USE] turn %d: model requested %d tool call(s); streamed %d chars",
+				turn, len(res.ToolCalls), len(res.Content))
+		} else {
+			log.Printf("[TOOL-USE] turn %d: model returned final answer (%d chars)",
+				turn, len(res.Content))
+		}
 		// If the model wants to call tools, execute them and loop.
 		if len(res.ToolCalls) > 0 {
 			// Log which tools the model selected this turn, and their parsed

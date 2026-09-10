@@ -1128,6 +1128,11 @@ body {
   transition: border-color 0.2s;
 }
 
+/* textarea: hide the default bottom-right resize handle */
+.chat-input {
+  resize: none;
+}
+
 .chat-input:focus {
   border-color: var(--primary-color);
 }

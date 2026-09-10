@@ -193,6 +193,10 @@ export function useStreaming(apiBaseUrl: string) {
               } else if (currentEvent === "done") {
                 try {
                   const evt = JSON.parse(dataStr);
+                  // Preserve a previously-set error (e.g. from an "error" SSE
+                  // event) so a following "done" doesn't wipe it, which would
+                  // otherwise hide a real failure and re-enable the send button.
+                  const err = streamingStateRef.current.error;
                   streamingStateRef.current = {
                     ...streamingStateRef.current,
                     conversationId: evt.conversation_id,
@@ -200,7 +204,7 @@ export function useStreaming(apiBaseUrl: string) {
                     citations: evt.citations || evt.confluence_links || [],
                     currentChunk: "",
                     isStreaming: false,
-                    error: null,
+                    error: err,
                   };
                   setState({ ...streamingStateRef.current });
                 } catch {

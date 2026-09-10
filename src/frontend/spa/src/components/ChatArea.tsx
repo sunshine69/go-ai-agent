@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useCallback } from "react";
 import { MessageBubble } from "./MessageBubble";
 import type { ChatMessage, StreamingState } from "../hooks/useStreaming";
 
@@ -7,7 +7,7 @@ interface ChatAreaProps {
   messages: ChatMessage[];
   streamingState: StreamingState;
   scopeLabel: string;
-  inputRef: React.RefObject<HTMLInputElement>;
+  inputRef: React.RefObject<HTMLTextAreaElement>;
   inputValue: string;
   setInputValue: (value: string) => void;
   placeholder: string;
@@ -32,6 +32,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   // Check if we're currently streaming with content
   const hasStreamingContent =
     streamingState.isStreaming && streamingState.fullAnswer.length > 0;
+
+  // Auto-grow the textarea as the user adds newlines, then cap its height.
+  const resizeTextarea = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = String(Math.min(el.scrollHeight, 200));
+  }, [inputRef]);
+
+  useEffect(() => {
+    resizeTextarea();
+  }, [resizeTextarea, inputValue]);
 
   // Debug: log streaming state changes
   useEffect(() => {
@@ -102,14 +114,36 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       {/* Input area */}
       <div className="chat-input-area">
         <form className="chat-input-form" onSubmit={onSend}>
-          <input
+          <textarea
             ref={inputRef}
-            className="chat-input"
-            type="text"
+            className="chat-input chat-input-textarea"
+            rows={1}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             placeholder={placeholder}
             disabled={isLoading}
+            onKeyDown={(e) => {
+              // Alt + Enter inserts a newline (and keeps it displayed),
+              // mirroring the behavior of a normal text editor.
+              if (e.key === "Enter" && e.altKey) {
+                e.preventDefault();
+                const target = e.target as HTMLTextAreaElement;
+                const start = target.selectionStart ?? 0;
+                const end = target.selectionEnd ?? 0;
+                const next =
+                  target.value.slice(0, start) + "\n" + target.value.slice(end);
+                setInputValue(next);
+                // Restore caret right after the inserted newline.
+                window.requestAnimationFrame(() => {
+                  target.selectionStart = target.selectionEnd = start + 1;
+                });
+              } else if (e.key === "Enter" && !e.shiftKey) {
+                // Plain Enter: submit instead of inserting a blank line
+                // (textarea, unlike input[type=text], inserts a newline by default).
+                e.preventDefault();
+                e.currentTarget.closest("form")?.requestSubmit();
+              }
+            }}
           />
           {isLoading ? (
             <button className="chat-input-stop" onClick={onStop} type="button">

@@ -1,7 +1,6 @@
 package routers
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -152,9 +151,10 @@ func writeToolUseDone(w http.ResponseWriter, convID string, sources []string, ci
 // caller should skip the hybrid path. err is non-nil only on an internal
 // failure that prevented serving; the caller may fall back to the hybrid path.
 func (m *messageStreamHandler) runToolUse(w http.ResponseWriter, r *http.Request, conv db.ConvView, msg, domain, subCategory string) (bool, error) {
-	// Scope the loop to a generous timeout.
-	toolCtx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
+	// Use the request's own context: the per-request HTTP client timeout bounds
+	// each turn; the loop is bounded by MODEL_MAX_TOOL_CALLS. r.Context() is
+	// cancelled if the client disconnects, so no extra deadline is needed.
+	toolCtx := r.Context()
 
 	// Build the controller. A nil controller means MCP is disabled, so there is
 	// no point entering tool mode — fall back to hybrid.
@@ -220,20 +220,32 @@ func (m *messageStreamHandler) runToolUse(w http.ResponseWriter, r *http.Request
 		persistToolTurn(m.h, r, conv, pm)
 	}
 
+	// On an internal controller failure (e.g. the model choked / returned
+	// invalid params), surface it to the client as an SSE "error" event BEFORE
+	// the closing "done" event. Otherwise useStreaming resets streamingState.error
+	// back to null on the "done" event and flips the send button back to play —
+	// the exact silent-failure bug reported: no error shown, nothing in server logs.
+	if runErr != nil {
+		errorData := fmt.Sprintf("{\"error\":\"%s\"}", escapeSSE(finalAnswer))
+		if _, werr := w.Write([]byte("event: error\ndata: " + errorData + "\n\n")); werr != nil {
+			// Best-effort: still write done below so the client can reset.
+		} else if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}
+
 	writeToolUseDone(w, conv.ID, sources, citations)
 	return true, nil
 }
 
 // runToolUseBlocking is the non-streaming counterpart of runToolUse. It is used
 // by the /api/messages handler, which must return the fully-assembled answer in
-// the JSON response body instead of emitting SSE events. It shares runToolUse's
-// history-building and controller-selection logic; the only difference is that
-// ctl.Run is called with a nil sink so the loop returns the complete answer in
-// result.FinalAnswer rather than streaming tokens.
+// the JSON response body instead of emitting SSE events.
+// It reuses runToolUse's history/RAG logic; the only difference
+// is that it calls ctl.Run with a nil sink so the loop returns the answer
 func (m *messageStreamHandler) runToolUseBlocking(r *http.Request, conv db.ConvView, msg, domain, subCategory string) (bool, error) {
 	// Scope the loop to a generous timeout.
-	toolCtx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
+	toolCtx := r.Context()
 
 	// Build the controller. A nil controller means MCP is disabled, so there is
 	// no point entering tool mode — fall back to hybrid.

@@ -104,7 +104,7 @@ export default function App() {
 
   // --- Refs ---
   const chatHistoryRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const [inputValue, setInputValue] = useState("");
 
   // --- Fetch domains on mount ---

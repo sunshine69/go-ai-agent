@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds all runtime configuration resolved from environment variables.
@@ -20,6 +21,16 @@ type Config struct {
 	LLMAPIKey      string
 	LLMBASEURL     string
 	LLMTemperature float64
+	// LLM_BACKEND lets the operator force the wire format of OpenAI-compatible
+	// fields that diverge between servers (most notably tool_choice). Supported
+	// values: "llama_cpp" / "ollama" (bare-string tool_choice, e.g. "auto"),
+	// else the OpenAI object form is used (default). Also auto-detected from
+	// LLM_BASE_URL / model when unset. Resolution lives in llm.detectBackend.
+	LLMBackend string
+	// LLMTimeout is the per-request HTTP timeout for the LLM client. It mirrors
+	// the reference app's 45m default (overridable via the LLM_TIMEOUT env var,
+	// which also accepts an integer number of seconds). Default: 45m.
+	LLMTimeout time.Duration
 
 	// MCP (stdio subprocess to the structured-data search server)
 	MCPEnabled    bool
@@ -32,10 +43,10 @@ type Config struct {
 	// MCP_ENDPOINT: a streamable-HTTP MCP endpoint (http://host:port/mcp) to
 	//   connect to. If set, it takes precedence over MCP_TOOL_EXEC_CMD and
 	//   MCP_SERVER_PATH (the app connects via Streamable HTTP). Optional.
-	MCPServerURL   string
+	MCPServerURL string
 	// MCP_BLOCK_LIST: comma-separated list of tool-name filters (regex or plain
 	//   substring) the model may NOT call. Optional. Default empty = no blocks.
-	MCPBlockList   string
+	MCPBlockList string
 
 	// Confluence
 	ConfluenceBaseURL string
@@ -59,10 +70,10 @@ type Config struct {
 	// at origin "wails://"). Every knob is dotenv-configurable; the defaults are
 	// already permissive enough that no changes are needed to make the Wails app
 	// work. Set CORS_ENABLED=false to disable the middleware entirely.
-	CORSEnabled      bool
+	CORSEnabled bool
 	// DB (application datastore: users, conversations, messages)
-	DBPath    string
-	DBDriver string
+	DBPath           string
+	DBDriver         string
 	CORSAuthority    string // Access-Control-Allow-Origin (":" = any, or a comma list)
 	CORSMethods      string // Access-Control-Allow-Methods
 	CORSAllowHeaders string // Access-Control-Allow-Headers
@@ -77,8 +88,8 @@ type Config struct {
 	//   "auto"  = probe-then-use: run the capability probe and pick per-request
 	// MODEL_MAX_TOOL_CALLS caps how many tool-call+re-request rounds the loop
 	// performs for a single user turn (guards against runaway tool loops).
-	FEATURE_TOOL_USE       string
-	MODEL_MAX_TOOL_CALLS   int
+	FEATURE_TOOL_USE     string
+	MODEL_MAX_TOOL_CALLS int
 }
 
 func envKey(name, fallback string) string {
@@ -123,6 +134,23 @@ func envFloat(name string, fallback float64) float64 {
 	return fallback
 }
 
+// timeoutDuration parses a Go duration string (e.g. "45m", "1h30m") or a plain
+// integer (interpreted as a number of seconds) from an environment variable.
+// The fallback is returned when the var is unset, empty, or unparseable.
+func timeoutDuration(name string, fallback time.Duration) time.Duration {
+	if v, ok := os.LookupEnv(name); ok && v != "" {
+		// A bare integer is treated as seconds (e.g. LLM_TIMEOUT=2700); a Go
+		// duration string (e.g. LLM_TIMEOUT=45m) is tried next.
+		if secs, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			return time.Duration(secs) * time.Second
+		}
+		if d, err := time.ParseDuration(strings.TrimSpace(v)); err == nil {
+			return d
+		}
+	}
+	return fallback
+}
+
 // Load reads configuration from the environment. If envDotPath is a path to a
 // .env file that exists, it is sourced first (KEY=value lines).
 func Load(envDotPath string) *Config {
@@ -150,11 +178,13 @@ func Load(envDotPath string) *Config {
 		LLMAPIKey:         envKey("LLM_API_KEY", "sk-placeholder"),
 		LLMBASEURL:        envKey("LLM_BASE_URL", ""),
 		LLMTemperature:    envFloat("LLM_TEMPERATURE", 0.1),
+		LLMTimeout:        timeoutDuration("LLM_TIMEOUT", 45*time.Minute),
+		LLMBackend:        envKey("LLM_BACKEND", ""), // "", "llama_cpp", or "ollama"
 		MCPEnabled:        envBool("MCP_ENABLED", true),
 		MCPServerPath:     envKey("MCP_SERVER_PATH", "geniq-mcp-server"),
-		MCPToolExecCmd:  envKey("MCP_TOOL_EXEC_CMD", ""),
+		MCPToolExecCmd:    envKey("MCP_TOOL_EXEC_CMD", ""),
 		MCPWorkDir:        envKey("MCP_WORK_DIR", wd),
-		MCPBlockList:    envKey("MCP_BLOCK_LIST", ""),
+		MCPBlockList:      envKey("MCP_BLOCK_LIST", ""),
 		ConfluenceBaseURL: envKey("CONFLUENCE_BASE_URL", ""),
 		RAGEnabled:        envBool("RAG_ENABLED", true),
 		RAGDocsDir:        rAGDocsDir,

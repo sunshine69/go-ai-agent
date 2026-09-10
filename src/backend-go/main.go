@@ -87,6 +87,11 @@ func main() {
 		APIKey:      cfg.LLMAPIKey,
 		Model:       cfg.LLMModel,
 		Temperature: cfg.LLMTemperature,
+		Timeout:     cfg.LLMTimeout,
+		// LLM_BACKEND forces the wire format; "" lets llm.New() auto-detect
+		// from the model name / base URL (which is what fixes the
+		// tool_choice object-rejection problem on local llama.cpp/ollama).
+		Backend: cfg.LLMBackend,
 	})
 
 	// --- RAG ---------------------------------------------------------------
@@ -123,11 +128,11 @@ func main() {
 
 	// --- Handlers ----------------------------------------------------------
 	h := routers.Handlers{
-		Manager: manager,
-		LLM:     llmClient,
-		Rag:     rag,
-		Cfg:     cfg,
-		DB:      d,
+		Manager:  manager,
+		LLM:      llmClient,
+		Rag:      rag,
+		Cfg:      cfg,
+		DB:       d,
 		Frontend: frontend,
 	}
 

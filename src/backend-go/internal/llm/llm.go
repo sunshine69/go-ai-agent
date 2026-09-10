@@ -20,15 +20,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 )
 
-var defaultClient = &http.Client{Timeout: 300 * time.Second}
+// defaultLLMTimeout is the per-request HTTP timeout used by a Client when the
+// caller does not specify one. It mirrors the reference app's 45m TIMEOUT
+// default. A per-client timeout is used (rather than a shared http.Client) so a
+// single long-lived client cannot be blocked indefinitely by one slow request.
+const defaultLLMTimeout = 45 * time.Minute
 
 // ToolCall mirrors a single OpenAI-style tool_call emitted by the model inside
 // an assistant message. Arguments arrive as a JSON string.
@@ -58,15 +62,17 @@ type ChatMessage struct {
 }
 
 // ToolChoice instructs the model how to select a function to call. It
-// serialises to the OpenAI structured form
+// serialises to the OpenAI structured form:
 //
 //	{"type":"function","function":{"name":"add_tool"}}  // pin a specific tool
 //	{"type":"function","function":{"name":"auto"}}      // let the model choose
 //
-// Some OpenAI-compatible servers (notably the qwopus-mtp model) ignore the
-// legacy bare-string form ("auto") and only honour this structured form, so we
-// always emit it. This type also marshals to the bare string "auto" via the
-// ToolChoiceAuto helper for servers that accept either.
+// NOTE on wire compatibility: llama.cpp and ollama only accept the legacy
+// bare-string form ("auto", "required", or "function:NAME") and reject this
+// object form with a warning ("type must be string, but is object"). Other
+// OpenAI-compatible servers (notably the qwopus-mtp model) ignore the bare
+// string and require this object form. The caller decides which form to emit by
+// inspecting the resolved backend — see backendToolChoice / encodeBody.
 type ToolChoice struct {
 	Type     string             `json:"type"`
 	Function ToolChoiceFunction `json:"function"`
@@ -77,11 +83,76 @@ type ToolChoiceFunction struct {
 	Name string `json:"name"`
 }
 
+// ToolChoiceAuto returns the OpenAI object form for "select whichever tool".
+// The bare-string form ("auto") is intentionally NOT returned here: servers
+// disagree on which form they accept, so callers must pick via backendToolChoice.
 func ToolChoiceAuto() *ToolChoice {
 	return &ToolChoice{Type: "function", Function: ToolChoiceFunction{Name: "auto"}}
 }
 func ToolChoicePinned(name string) *ToolChoice {
 	return &ToolChoice{Type: "function", Function: ToolChoiceFunction{Name: name}}
+}
+
+// backendToolChoice converts a *ToolChoice to the JSON literal the given backend
+// expects. For llama.cpp/ollama (which reject the object form) it emits the
+// bare string: "auto", "required", or "function:<name>". For everything else it
+// emits the OpenAI object form. Returns nil when there is no choice.
+func backendToolChoice(backend string, tc *ToolChoice) json.RawMessage {
+	if tc == nil {
+		return nil
+	}
+	name := tc.Function.Name
+	if name == "" {
+		name = "auto"
+	}
+	switch backend {
+	case "llama_cpp", "ollama":
+		// Plain sentinel names pass through verbatim.
+		if name == "auto" || name == "required" || name == "none" {
+			return json.RawMessage(`"` + name + `"`)
+		}
+		// A plain tool name (or the bare "function" selector) is pinned as
+		// "function:<name>". An already-prefixed value is used as-is.
+		if name == "function" {
+			name = "function:default"
+		} else if strings.HasPrefix(name, "function:") {
+			// Already in the wire form.
+		} else {
+			name = "function:" + name
+		}
+		return json.RawMessage(`"` + name + `"`)
+	default:
+		b, _ := json.Marshal(tc)
+		return b
+	}
+}
+
+// encodeBody marshals a CompletionRequest into request-body bytes, choosing the
+// tool_choice representation that matches the target backend. Only tool_choice
+// differs between backends; all other fields are serialized identically. Returns
+// a non-nil error only when the non-tool_choice fields fail to marshal.
+func encodeBody(backend string, req CompletionRequest) ([]byte, error) {
+	// Re-serialize the body with a backend-aware tool_choice. We marshal into a
+	// map to swap the field rather than editing fields in place, so the result
+	// is exactly what this backend will receive.
+	raw, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+	if b := obj["tool_choice"]; b != nil {
+		// Re-parse as a *ToolChoice so we can re-emit the right wire form.
+		var tc ToolChoice
+		if json.Unmarshal(b, &tc) == nil && tc.Type != "" && tc.Function.Name != "" {
+			if bce := backendToolChoice(backend, &tc); bce != nil {
+				obj["tool_choice"] = bce
+			}
+		}
+	}
+	return json.Marshal(obj)
 }
 
 // Config holds the parameters needed to reach the chat endpoint.
@@ -90,15 +161,24 @@ type Config struct {
 	APIKey      string
 	Model       string
 	Temperature float64
+	// Backend overrides the wire-format family of the backend. Values:
+	// "llama_cpp" / "ollama" (bare-string tool_choice), or "" to auto-detect
+	// from URL/model. Detection prefers the model string, then the base URL.
+	// Timeout is the per-request HTTP timeout for requests made by the client.
+	// When zero, New() uses the 45m default (mirroring the reference app's
+	// TIMEOUT default). Set it to override that default per client.
+	Timeout time.Duration
+	Backend string
 }
 
 // Client wraps a chat-endpoint configuration.
 type Client struct {
-	cfg  Config
-	http *http.Client
+	cfg     Config
+	backend string // resolved backend family used for wire-format decisions
+	http    *http.Client
 }
 
-// New constructs a Client.
+// New constructs a Client, resolving the wire-format backend family from cfg.
 func New(cfg Config) *Client {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.openai.com/v1"
@@ -109,7 +189,50 @@ func New(cfg Config) *Client {
 	if cfg.APIKey == "" {
 		cfg.APIKey = "sk-placeholder"
 	}
-	return &Client{cfg: cfg, http: defaultClient}
+
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultLLMTimeout
+	}
+	return &Client{cfg: cfg, backend: detectBackend(cfg), http: &http.Client{Timeout: timeout}}
+}
+
+// Backend reports the resolved wire-format family ("llama_cpp", "ollama", or
+// "" for the generic OpenAI object form). It is safe to call before any request.
+func (c *Client) Backend() string { return c.backend }
+
+// detectBackend resolves the wire-format family for a Config. An explicit cfg.
+// Backend wins; otherwise it is sniffed from the model name, then the base URL.
+// llama.cpp and ollama only accept a bare-string tool_choice ("auto"/"required"/
+// "function:NAME") and reject the OpenAI object form, which the old ToolChoice
+// comment got wrong (it had no MarshalJSON and always emitted the object).
+func detectBackend(cfg Config) string {
+	if cfg.Backend != "" {
+		return strings.ToLower(strings.TrimSpace(cfg.Backend))
+	}
+	// Model string is the most reliable signal for a local server: ollama uses
+	// the "ollama/<name>" prefix and llama.cpp models are frequently named with
+	// "llama" / "llamacpp".
+	model := strings.ToLower(cfg.Model)
+	// NOTE: check ollama before llama — the string "ollama" contains the
+	// substring "llama", so a naïve Contains(model, "llama") would misclassify
+	// an ollama model as llama.cpp.
+	if strings.Contains(model, "ollama") {
+		return "ollama"
+	}
+	if strings.Contains(model, "llama") || strings.Contains(model, "llamacpp") {
+		return "llama_cpp"
+	}
+	// Fall back to the base URL (covers setups where the server host or path
+	// carries the "llama"/"ollama" token but the model name does not).
+	u := strings.ToLower(cfg.BaseURL)
+	if strings.Contains(u, "ollama") {
+		return "ollama"
+	}
+	if strings.Contains(u, "llama") || strings.Contains(u, "llamacpp") {
+		return "llama_cpp"
+	}
+	return "" // generic OpenAI object form
 }
 
 // Model returns the configured model name.
@@ -178,9 +301,28 @@ type streamChoice struct {
 }
 
 // streamDelta holds the incremental token for this chunk.
+//
+// OpenAI-compatible servers emit streaming tool calls inside the delta object
+// (llama.cpp / ollama / most servers); the full-message form appears in
+// streamChoice.Message. Reading both keeps us compatible with either wire style.
+//
+// The tool calls arrive as streamToolCallDelta fragments (not []ToolCall) so we
+// can read each fragment's own "index" field — that index is the stable key
+// that groups all fragments of a single call into one tool call across chunks.
 type streamDelta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role      string                 `json:"role,omitempty"`
+	Content   string                 `json:"content,omitempty"`
+	ToolCalls []*streamToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+// streamToolCallDelta is one streamed tool-call fragment. Its "index" groups
+// fragments that belong to the same model-issued tool call (which the server
+// may split across many chunks before emitting the arguments).
+type streamToolCallDelta struct {
+	Index    int              `json:"index,omitempty"`
+	ID       string           `json:"id,omitempty"`
+	Type     string           `json:"type,omitempty"`
+	Function FunctionToolCall `json:"function"`
 }
 
 // streamContent returns the incremental text in this choice, preferring the
@@ -231,7 +373,10 @@ func (c *Client) Answer(ctx context.Context, system string, history []ChatMessag
 		Temperature: &temp,
 	}
 
-	data, err := json.Marshal(reqBody)
+	// Backend-aware encoding: llama.cpp/ollama require a bare-string tool_choice
+	// (an object form is silently dropped, breaking tool use), so encodeBody
+	// emits the form that matches this client's resolved backend.
+	data, err := encodeBody(c.backend, reqBody)
 	if err != nil {
 		return "Sorry, I encountered an error preparing the request."
 	}
@@ -337,7 +482,7 @@ func (c *Client) AnswerStream(ctx context.Context, system string, history []Chat
 		Stream:      &stream,
 	}
 
-	data, err := json.Marshal(reqBody)
+	data, err := encodeBody(c.backend, reqBody)
 	if err != nil {
 		return fmt.Errorf("prepare request: %w", err)
 	}
@@ -431,8 +576,8 @@ func FromToolCalls(tcs []map[string]any) []*ToolCall {
 func (c *Client) Complete(ctx context.Context, reqBody CompletionRequest) (*CompletionResponse, error) {
 	// Log the incoming completion request so we can see what is being
 	// sent to the model, including whether tools are attached.
-	log.Printf("[LLM] Complete: model=%s stream=false tools=%d", reqBody.Model, len(reqBody.Tools))
-	data, err := json.Marshal(reqBody)
+	log.Printf("[LLM] Complete: model=%s stream=false tools=%d backend=%s", reqBody.Model, len(reqBody.Tools), c.backend)
+	data, err := encodeBody(c.backend, reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -477,7 +622,7 @@ func (c *Client) Complete(ctx context.Context, reqBody CompletionRequest) (*Comp
 // streaming forms. Used to stream the tool-use controller's final answer
 // token-by-token. On error it returns non-nil.
 func (c *Client) StreamMessages(ctx context.Context, reqBody CompletionRequest, sink func(string)) error {
-	data, err := json.Marshal(reqBody)
+	data, err := encodeBody(c.backend, reqBody)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
@@ -531,7 +676,6 @@ func (c *Client) StreamMessages(ctx context.Context, reqBody CompletionRequest, 
 	return nil
 }
 
-
 // streamTurnResult holds the outcome of a single streamed tool-use turn:
 // the fully-assembled streamed content and any tool_calls the model
 // requested that must be executed before the next turn.
@@ -554,8 +698,12 @@ func (c *Client) StreamTurn(ctx context.Context, reqBody CompletionRequest, sink
 	// stream:true flag in the body in addition to the query param.
 	stream := true
 	reqBody.Stream = &stream
+	data, err := encodeBody(c.backend, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.cfg.BaseURL+"/chat/completions?stream=true", bytes.NewReader(reqBody.data()))
+		c.cfg.BaseURL+"/chat/completions?stream=true", bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("new request: %w", err)
 	}
@@ -579,10 +727,24 @@ func (c *Client) StreamTurn(ctx context.Context, reqBody CompletionRequest, sink
 	scanner := bufio.NewScanner(httpResp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
-	// Accumulate tool calls across streaming chunks, keyed by tool-call index.
-	// A single tool call can be split across many chunks (ID and function name
-	// arrive before the arguments), so we merge by index.
-	toolAccum := map[int]*ToolCall{}
+	// Accumulate tool calls across streaming chunks. llama.cpp / ollama / most
+	// OpenAI-compatible servers stream tool calls inside the *delta* object
+	// (delta.tool_calls), and a single call is split across many chunks: its ID
+	// and function name often arrive before its arguments. The OpenAI "index"
+	// field on each tool_calls delta is the stable key that keeps all of a call's
+	// fragments in one bucket, so we key by it (a running counter backs us up if
+	// a server omits the index).
+	type tcAccum struct {
+		Index int
+		ID    string
+		Type  string
+		Name  string
+		Args  string
+	}
+	toolAccum := map[int]*tcAccum{}
+	seenOrder := []int{} // keys in first-seen order, so results stay sorted
+	var runningIdx int   // fallback position counter if a server omits "index"
+	var msgIdx int       // counter for the message-form tool calls below
 	var content strings.Builder
 
 	for scanner.Scan() {
@@ -599,41 +761,83 @@ func (c *Client) StreamTurn(ctx context.Context, reqBody CompletionRequest, sink
 			continue
 		}
 		for _, ch := range chunk.Choices {
-			// Stream text content in real time.
+			// finish_reason "tool_calls" means the model wants to call tools.
+			// Keep scanning (don't break) so we collect every argument before
+			// finalizing; a plain "stop" with a half-built call is handled by
+			// the JSON-validation below.
+
+			// Stream text content from the delta, if present.
 			if ch.Delta.Content != "" {
 				content.WriteString(ch.Delta.Content)
 				if sink != nil {
 					sink(ch.Delta.Content)
 				}
-				continue
 			}
-			if ch.Message.Content != "" {
-				content.WriteString(ch.Message.Content)
-				if sink != nil {
-					sink(ch.Message.Content)
-				}
-				continue
-			}
-			// Accumulate tool calls by index (ID, Type, name, args may arrive
-			// separately across chunks).
-			for _, tc := range ch.Message.ToolCalls {
-				if tc == nil || tc.Function.Name == "" {
+
+			// Read tool calls from the delta object — the form llama.cpp /
+			// ollama / streaming servers actually use. This is the branch the
+			// old code missed entirely, which is why every tool call vanished.
+			sawDeltaCalls := false
+			for _, tcDelta := range ch.Delta.ToolCalls {
+				sawDeltaCalls = true
+				if tcDelta == nil {
 					continue
 				}
-				key := len(toolAccum) + 1
-				existing := toolAccum[key]
-				if existing == nil {
-					existing = &ToolCall{}
-					toolAccum[key] = existing
+				key := tcDelta.Index
+				if key < 0 {
+					key = runningIdx
+					runningIdx++
 				}
-				if tc.ID != "" {
-					existing.ID = tc.ID
+				if key < 0 {
+					continue
 				}
-				if tc.Type != "" {
-					existing.Type = tc.Type
+				entry := toolAccum[key]
+				if entry == nil {
+					entry = &tcAccum{Index: key}
+					toolAccum[key] = entry
+					seenOrder = append(seenOrder, key)
 				}
-				existing.Function.Name = tc.Function.Name
-				existing.Function.Arguments += tc.Function.Arguments
+				// Merge fragments WITHOUT clobbering a real field with a later
+				// empty one.
+				if tcDelta.ID != "" && entry.ID == "" {
+					entry.ID = tcDelta.ID
+				}
+				if tcDelta.Type != "" && entry.Type == "" {
+					entry.Type = tcDelta.Type
+				}
+				if tcDelta.Function.Name != "" && entry.Name == "" {
+					entry.Name = tcDelta.Function.Name
+				}
+				entry.Args += tcDelta.Function.Arguments
+			}
+
+			// Fallback: some servers carry full messages (message.tool_calls)
+			// instead of deltas; only use that form when a chunk carries no
+			// delta tool calls, so we never duplicate one call twice.
+			if !sawDeltaCalls {
+				for _, tcMsg := range ch.Message.ToolCalls {
+					if tcMsg == nil {
+						continue
+					}
+					key := msgIdx
+					msgIdx++
+					entry := toolAccum[key]
+					if entry == nil {
+						entry = &tcAccum{Index: key}
+						toolAccum[key] = entry
+						seenOrder = append(seenOrder, key)
+					}
+					if tcMsg.ID != "" && entry.ID == "" {
+						entry.ID = tcMsg.ID
+					}
+					if tcMsg.Type != "" && entry.Type == "" {
+						entry.Type = tcMsg.Type
+					}
+					if tcMsg.Function.Name != "" && entry.Name == "" {
+						entry.Name = tcMsg.Function.Name
+					}
+					entry.Args += tcMsg.Function.Arguments
+				}
 			}
 		}
 	}
@@ -641,36 +845,54 @@ func (c *Client) StreamTurn(ctx context.Context, reqBody CompletionRequest, sink
 		return nil, fmt.Errorf("read stream: %w", err)
 	}
 
+	// Finalize the accumulated tool calls, in call order, keeping only those
+	// with a name and arguments that parse as valid JSON so the loop can safely
+	// execute them next round.
 	var toolCalls []*ToolCall
-	for _, tc := range toolAccum {
-		args := strings.TrimSpace(tc.Function.Arguments)
+	for _, key := range seenOrder {
+		e := toolAccum[key]
+		if e == nil {
+			continue
+		}
+		name := strings.TrimSpace(e.Name)
+		if name == "" {
+			continue
+		}
+		if e.Type == "" {
+			e.Type = "function"
+		}
+		args := strings.TrimSpace(e.Args)
 		if args == "" {
 			continue
 		}
-		// Only keep tool calls whose arguments are valid JSON, so the loop
-		// can safely execute them next round.
 		var tmp any
 		if json.Unmarshal([]byte(args), &tmp) != nil {
+			log.Printf("[LLM] StreamTurn: discarding tool call %q with invalid arguments %q", name, args)
 			continue
 		}
-		if tc.ID == "" {
-			tc.ID = fmt.Sprintf("call-%s", tc.Function.Name)
+		id := strings.TrimSpace(e.ID)
+		if id == "" {
+			id = fmt.Sprintf("call-%s", name)
 		}
-		toolCalls = append(toolCalls, tc)
+		toolCalls = append(toolCalls, &ToolCall{
+			ID:   id,
+			Type: e.Type,
+			Function: FunctionToolCall{
+				Name:      name,
+				Arguments: args,
+			},
+		})
+	}
+	if len(toolCalls) > 0 {
+		log.Printf("[LLM] StreamTurn: accumulated %d tool call(s)", len(toolCalls))
+		for _, tc := range toolCalls {
+			log.Printf("[LLM] StreamTurn: tool call %q args=%s", tc.Function.Name, tc.Function.Arguments)
+		}
 	}
 
 	return &streamTurnResult{Content: content.String(), ToolCalls: toolCalls}, nil
 }
 
-// data marshals the CompletionRequest body for the streaming endpoint.
-func (b CompletionRequest) data() []byte {
-	raw, err := json.Marshal(b)
-	if err != nil {
-		// Fall back to a minimal body; should not happen for valid requests.
-		return []byte("{}")
-	}
-	return raw
-}
 func truncate(b []byte, n int) string {
 	s := string(b)
 	if len(s) > n {
