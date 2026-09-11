@@ -27,11 +27,12 @@ import (
 	"github.com/stevek/go-ai-agent/backend-go/internal/ragstore"
 )
 
-// Default chunking params (RAG_CHUNK_SIZE / RAG_CHUNK_OVERLAP in the Python
-// indexer).
+// Default chunking params, matching RAG_CHUNK_SIZE / RAG_CHUNK_OVERLAP in the
+// Python indexer. These are used as the fallback values in New() when a
+// non-positive chunk size or overlap is supplied (i.e. unset config).
 const (
-	DefaultChunkSize = 800
-	DefaultOverlap   = 150
+	DefaultChunkSize = 512
+	DefaultOverlap   = 50
 )
 
 // Mode selects the indexing strategy.
@@ -302,7 +303,10 @@ func (ix *Indexer) handleFile(path, category string) {
 		return
 	}
 
-	chunkSize, overlap := DefaultChunkSize, DefaultOverlap
+	// Use the configured chunk size / overlap (from RAG_CHUNK_SIZE /
+	// RAG_CHUNK_OVERLAP, validated in New()). The Default* constants are kept
+	// only for the fallback in New().
+	chunkSize, overlap := ix.opts.ChunkSize, ix.opts.ChunkOverlap
 	rawChunks := chunkText(text, chunkSize, overlap)
 	if len(rawChunks) == 0 {
 		fmt.Printf("    WARNING: No chunks generated\n")

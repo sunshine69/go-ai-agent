@@ -59,27 +59,49 @@ func loadPDF(path string) (string, error) {
 	return strings.Join(parts, "\n"), nil
 }
 
-// chunkText mirrors the Python chunk_text(): fixed-size split with overlap.
+// chunkText produces overlapping fixed-size chunks of text.
+//
+// Overlap is applied as follows: after writing a chunk of `size` bytes starting
+// at `start`, the next chunk starts `overlap` bytes back from the current chunk's
+// end (i.e. `start + size - overlap`). This means consecutive chunks share the
+// last `overlap` bytes of the previous one, which keeps context at boundaries
+// intact when splitting long documents. The `size` argument is treated as the
+// hard upper bound on chunk length, so the final chunk may be shorter than
+// `size` but never longer.
+//
+// If overlap is 0 the behaviour collapses to a plain fixed-size split. If
+// overlap >= size the step becomes `size - overlap <= 0`, which would cause an
+// infinite loop; we then fall back to stepping by `size` (non-overlapping) so
+// the function always terminates and the caller gets usable chunks.
 func chunkText(text string, size, overlap int) []string {
+	// Guard against non-positive size: nothing to split without a valid size.
+	if size <= 0 {
+		return nil
+	}
 	if len(text) <= size {
 		if strings.TrimSpace(text) == "" {
 			return nil
 		}
 		return []string{text}
 	}
+
 	var chunks []string
 	start := 0
+	// Effective step: advance by (size - overlap), clamped so it never goes
+	// non-positive. A non-positive step would either loop forever or step
+	// backwards, so a minimum of 1 byte keeps the loop alive and terminating.
+	step := size - overlap
+	if step < 1 {
+		step = size
+	}
+
 	for start < len(text) {
 		end := start + size
 		if end > len(text) {
 			end = len(text)
 		}
 		chunks = append(chunks, text[start:end])
-		next := end - overlap
-		if next <= start {
-			next = start + size // avoid infinite loop if overlap >= size
-		}
-		start = next
+		start += step
 	}
 	return chunks
 }
