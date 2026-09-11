@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import "./style.css";
 import { Markdown } from "./components/Markdown";
 import { useApi } from "./hooks/useApi";
-import { getSettings, setSetting } from "./utils/settings";
+import { getSettings, setSetting, getMcpdir, setMcpdir, McpdirResponse } from "./utils/settings";
 
 // Same-origin base for /api/* calls (empty string serves in production
 // through Wails; set VITE_BACKEND_URL only for standalone dev via env).
@@ -81,6 +81,13 @@ export default function App() {
   useEffect(() => {
     getSettings(API_BASE)
       .then(setSettingsState)
+      .catch(() => undefined);
+  }, []);
+
+  // --- Fetch MCP working dir on mount (mirrors SPA mount effect) ---
+  useEffect(() => {
+    getMcpdir(API_BASE)
+      .then(setMcpdirState)
       .catch(() => undefined);
   }, []);
   // --- Fetch conversations on mount (mirrors SPA mount effect) ---
@@ -296,8 +303,18 @@ export default function App() {
           void applyContextLimit(arg);
         }
         break;
+      case "/mcpdir":
+        if (arg === "") {
+          flashSettings(
+            "ok",
+            `MCP working dir: ${mcpdir?.value || "(unset; uses server default)"}`
+          );
+        } else {
+          void applyMcpdir(arg);
+        }
+        break;
       case "/help":
-        flashSettings("ok", "Available commands: /ctx [number], /clear, /help");
+        flashSettings("ok", "Available commands: /ctx [number], /mcpdir <path>, /clear, /help");
         break;
       default:
         // Unknown command — ignore silently.
@@ -308,6 +325,8 @@ export default function App() {
   // Formats a token budget as a human-readable string.
   const fmt = (n: number): string =>
     Number.isFinite(n) ? n.toLocaleString() : "0";
+
+  const [mcpdir, setMcpdirState] = useState<McpdirResponse | null>(null);
 
   const [settings, setSettingsState] = useState<{ context_limit: number } | null>(
     null
@@ -334,6 +353,34 @@ export default function App() {
       flashSettings("ok", `Context limit set to ${updated.context_limit} tokens.`);
     } catch {
       flashSettings("error", "Failed to set context limit. Please try again.");
+    }
+  };
+
+  // Applies the per-user MCP working-directory selector stored via /mcpdir
+  // (mirrors applyContextLimit, backed by /api/mcpdir).
+  const applyMcpdir = async (value: string) => {
+    const trimmed = value.trim();
+    if (trimmed === "") {
+      flashSettings("error", "Please enter a non-empty directory path.");
+      return;
+    }
+    // Reject any parent-directory traversal component ("..").
+    const segs = trimmed.split(/[\\/]+/);
+    if (segs.includes("..")) {
+      flashSettings("error", "MCP working dir must not contain '..'.");
+      return;
+    }
+    try {
+      const updated = await setMcpdir(API_BASE, { value: trimmed });
+      setMcpdirState(updated);
+      flashSettings(
+        "ok",
+        updated.value
+          ? `MCP working dir set to ${updated.value}.`
+          : "MCP working dir cleared (using server default)."
+      );
+    } catch (e) {
+      flashSettings("error", `Failed to set MCP working dir: ${e?.message || e}`);
     }
   };
 

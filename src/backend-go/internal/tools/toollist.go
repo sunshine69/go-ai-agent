@@ -8,6 +8,8 @@
 package tools
 
 import (
+	"fmt"
+
 	"github.com/stevek/go-ai-agent/backend-go/internal/mcpclient"
 )
 
@@ -43,7 +45,19 @@ func (p *Provider) HasTools() bool {
 	return len(p.manager.Tools()) > 0
 }
 
-// Manager returns the underlying MCP manager, or nil when MCP is disabled.
-func (p *Provider) Manager() *mcpclient.ResilientMCPClient {
-	return p.manager
+// IsNil reports whether the underlying MCP client is nil (MCP disabled or
+// not yet connected). Callers that only need to know "are there tools" can
+// use HasTools(); this additionally covers a nil inner client.
+func (p *Provider) IsNil() bool {
+	return p.manager == nil
+}
+
+// CallTool invokes a named MCP tool through the underlying client. It is only
+// called when the caller has already confirmed a client is present (via IsNil),
+// but it is itself nil-safe.
+func (p *Provider) CallTool(name string, args map[string]any) (string, error) {
+	if p.manager == nil {
+		return "", fmt.Errorf("no MCP server connected")
+	}
+	return p.manager.CallTool(name, args)
 }

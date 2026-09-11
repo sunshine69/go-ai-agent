@@ -25,11 +25,11 @@ import (
 // is returned unchanged. It also returns the retrieved sources and Confluence
 // citations so the caller can surface them in the context/done SSE events,
 // mirroring the hybrid path.
-func augmentToolUseMessage(h Handlers, query, domain, subCategory string) (string, []string, []confluenceLink) {
+func augmentToolUseMessage(r *http.Request, h Handlers, query, domain, subCategory string) (string, []string, []confluenceLink) {
 	if h.Rag == nil || query == "" {
 		return query, nil, nil
 	}
-	builder := ctxbldg.New(h.Cfg, h.Manager, h.Rag)
+	builder := ctxbldg.New(h.Cfg, h.mcpClient(r), h.Rag)
 	contextText, sources, confluenceRefs := builder.BuildContext(query, domain, subCategory)
 	// Skip context when it is empty or purely error-based so the LLM can answer
 	// freely from its own knowledge + tools.
@@ -158,7 +158,7 @@ func (m *messageStreamHandler) runToolUse(w http.ResponseWriter, r *http.Request
 
 	// Build the controller. A nil controller means MCP is disabled, so there is
 	// no point entering tool mode — fall back to hybrid.
-	ctl := newToolUseController(m.h)
+	ctl := newToolUseController(r, m.h)
 	if ctl == nil {
 		return false, nil
 	}
@@ -188,7 +188,7 @@ func (m *messageStreamHandler) runToolUse(w http.ResponseWriter, r *http.Request
 	// calling tools rather than via server-injected context text.
 	// Augment the query with RAG + Confluence context, mirroring the hybrid
 	// path, so retrieved knowledge reaches the model even in tool mode.
-	query, sources, citations := augmentToolUseMessage(m.h, msg, domain, subCategory)
+	query, sources, citations := augmentToolUseMessage(r, m.h, msg, domain, subCategory)
 	msgs = append(msgs, llm.ChatMessage{Role: "user", Content: query})
 
 	// Stream the final answer to the client.
@@ -249,7 +249,7 @@ func (m *messageStreamHandler) runToolUseBlocking(r *http.Request, conv db.ConvV
 
 	// Build the controller. A nil controller means MCP is disabled, so there is
 	// no point entering tool mode — fall back to hybrid.
-	ctl := newToolUseController(m.h)
+	ctl := newToolUseController(r, m.h)
 	if ctl == nil {
 		return false, nil
 	}
@@ -277,7 +277,7 @@ func (m *messageStreamHandler) runToolUseBlocking(r *http.Request, conv db.ConvV
 	// calling tools rather than via server-injected context text.
 	// Augment the query with RAG + Confluence context, mirroring the hybrid
 	// path, so retrieved knowledge reaches the model even in tool mode.
-	query, _, _ := augmentToolUseMessage(m.h, msg, domain, subCategory)
+	query, _, _ := augmentToolUseMessage(r, m.h, msg, domain, subCategory)
 	msgs = append(msgs, llm.ChatMessage{Role: "user", Content: query})
 
 	// Run with a nil sink so the loop returns the assembled final answer.

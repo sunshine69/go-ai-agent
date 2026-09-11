@@ -19,6 +19,7 @@ type User struct {
 	Email        string     `json:"email"`
 	PasswordHash string     `json:"-"`
 	IsAdmin      bool       `json:"is_admin"`
+	AllowMcp     bool       `json:"allow_mcp"`
 	CreatedAt    time.Time  `json:"created_at"`
 	LastLogin    *time.Time `json:"last_login,omitempty"`
 }
@@ -30,6 +31,7 @@ type UserView struct {
 	LoginName string `json:"login_name"`
 	Email     string `json:"email"`
 	IsAdmin   bool   `json:"is_admin"`
+	AllowMcp  bool   `json:"allow_mcp"`
 	CreatedAt string `json:"created_at"`
 	LastLogin string `json:"last_login,omitempty"`
 }
@@ -83,7 +85,7 @@ func (ur *UserRepo) seedAdmin(login, email, password string) (*User, error) {
 func (ur *UserRepo) getByLogin(login string) (*User, error) {
 	login = strings.TrimSpace(login)
 	row := ur.db.db.QueryRowContext(context.Background(), `
-		SELECT id, login_name, email, password_hash, is_admin, created_at, last_login
+		SELECT id, login_name, email, password_hash, is_admin, allow_mcp, created_at, last_login
 		FROM users WHERE login_name = ?`, login)
 	u, err := scanUser(row)
 	if err != nil {
@@ -98,7 +100,7 @@ func (ur *UserRepo) getByLogin(login string) (*User, error) {
 // GetByID returns a user by primary key.
 func (ur *UserRepo) GetByID(id int64) (*User, error) {
 	row := ur.db.db.QueryRowContext(context.Background(), `
-		SELECT id, login_name, email, password_hash, is_admin, created_at, last_login
+		SELECT id, login_name, email, password_hash, is_admin, allow_mcp, created_at, last_login
 		FROM users WHERE id = ?`, id)
 	u, err := scanUser(row)
 	if err != nil {
@@ -113,7 +115,7 @@ func (ur *UserRepo) GetByID(id int64) (*User, error) {
 // list returns every user (including their hash, which is stripped in UserView).
 func (ur *UserRepo) list() ([]*User, error) {
 	rows, err := ur.db.db.QueryContext(context.Background(), `
-		SELECT id, login_name, email, password_hash, is_admin, created_at, last_login
+		SELECT id, login_name, email, password_hash, is_admin, allow_mcp, created_at, last_login
 		FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -145,7 +147,7 @@ func (ur *UserRepo) UserViews() ([]UserView, error) {
 }
 
 // Insert creates a new user with a bcrypt-hashed password.
-func (ur *UserRepo) Insert(login, email, password string, isAdmin bool) (*User, error) {
+func (ur *UserRepo) Insert(login, email, password string, isAdmin, allowMcp bool) (*User, error) {
 	login = strings.TrimSpace(login)
 	if login == "" || password == "" {
 		return nil, errors.New("login_name and password are required")
@@ -159,9 +161,13 @@ func (ur *UserRepo) Insert(login, email, password string, isAdmin bool) (*User, 
 	if isAdmin {
 		adminInt = 1
 	}
+	allowMcpInt := 0
+	if allowMcp {
+		allowMcpInt = 1
+	}
 	res, err := ur.db.db.ExecContext(context.Background(),
-		"INSERT INTO users (login_name, email, password_hash, is_admin, created_at) VALUES (?, ?, ?, ?, ?)",
-		login, email, string(hash), adminInt, now)
+		"INSERT INTO users (login_name, email, password_hash, is_admin, allow_mcp, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+		login, email, string(hash), adminInt, allowMcpInt, now)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return nil, fmt.Errorf("user %q already exists", login)
@@ -295,13 +301,15 @@ func scanUser(s scanner) (*User, error) {
 	var (
 		u         User
 		isAdmin   int
+		allowMcp  int
 		createdAt string
 		lastLogin sql.NullString
 	)
-	if err := s.Scan(&u.ID, &u.LoginName, &u.Email, &u.PasswordHash, &isAdmin, &createdAt, &lastLogin); err != nil {
+	if err := s.Scan(&u.ID, &u.LoginName, &u.Email, &u.PasswordHash, &isAdmin, &allowMcp, &createdAt, &lastLogin); err != nil {
 		return nil, err
 	}
 	u.IsAdmin = isAdmin == 1
+	u.AllowMcp = allowMcp == 1
 	if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
 		u.CreatedAt = t
 	}
@@ -319,6 +327,7 @@ func (u *User) toView() UserView {
 		LoginName: u.LoginName,
 		Email:     u.Email,
 		IsAdmin:   u.IsAdmin,
+		AllowMcp:  u.AllowMcp,
 	}
 	if !u.CreatedAt.IsZero() {
 		v.CreatedAt = u.CreatedAt.UTC().Format(time.RFC3339)

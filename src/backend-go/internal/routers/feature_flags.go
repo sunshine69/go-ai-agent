@@ -6,25 +6,26 @@ package routers
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/stevek/go-ai-agent/backend-go/internal/config"
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
-	"github.com/stevek/go-ai-agent/backend-go/internal/tooluse"
 	"github.com/stevek/go-ai-agent/backend-go/internal/tools"
+	"github.com/stevek/go-ai-agent/backend-go/internal/tooluse"
 )
 
 // newToolUseController builds a tool-use orchestrator from the handlers'
 // dependencies. It is used by the message handlers when the FEATURE_TOOL_USE
 // knob enables tool mode. A nil controller means "tool use unavailable" — the
 // caller falls back to the hybrid ContextBuilder path.
-func newToolUseController(h Handlers) *tooluse.ToolUse {
+func newToolUseController(r *http.Request, h Handlers) *tooluse.ToolUse {
 	// When MCP is disabled the model has no tools to call, so there is no
 	// point entering tool mode; the controller would loop with every tool
 	// returning "unavailable".
-	if h.Manager == nil {
+	if h.mcpClient(r) == nil {
 		return nil
 	}
-	provider := tools.NewProvider(h.Manager)
+	provider := tools.NewProvider(h.mcpClient(r))
 	maxCalls := h.Cfg.MODEL_MAX_TOOL_CALLS
 	if maxCalls <= 0 {
 		maxCalls = 5

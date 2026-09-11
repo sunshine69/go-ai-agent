@@ -170,7 +170,7 @@ func (t *ToolUse) Run(ctx context.Context, messages []llm.ChatMessage, sink func
 
 // executeTool runs a single MCP tool call and returns its result text, or an
 // error message on failure. It re-uses the ResilientMCPClient via the tool
-// provider's manager.
+// provider.
 func (t *ToolUse) executeTool(ctx context.Context, name, argsJSON string) string {
 	// Parse the JSON arguments the model produced.
 	args := map[string]any{}
@@ -180,11 +180,11 @@ func (t *ToolUse) executeTool(ctx context.Context, name, argsJSON string) string
 		}
 	}
 
-	if t.provider == nil || t.provider.Manager() == nil {
+	if t.provider == nil || t.provider.IsNil() {
 		return fmt.Sprintf("MCP tool %q unavailable", name)
 	}
 
-	result, err := t.provider.Manager().CallTool(name, args)
+	result, err := t.provider.CallTool(name, args)
 	if err != nil {
 		return fmt.Sprintf("MCP tool %q error: %s", name, err.Error())
 	}

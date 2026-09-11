@@ -7,7 +7,7 @@ import { DomainPills } from "./components/DomainPill";
 import { SubCategoryPills } from "./components/SubCategoryPill";
 import { ChatArea } from "./components/ChatArea";
 import { Login } from "./components/Login";
-import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings } from "./utils/api";
+import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir } from "./utils/api";
 
 // Base URL for the AI backend — read from .env file
 const API_BASE =
@@ -91,6 +91,25 @@ export default function App() {
     if (!showAuthedUI) return;
     getSettings(API_BASE)
       .then(setSettingsState)
+      .catch(() => undefined);
+  }, [showAuthedUI]);
+
+  // Load the MCP connection status once we're authed (read-only mirror of the
+  // /ctx effect below). /mcp can still refresh it on demand.
+  useEffect(() => {
+    if (!showAuthedUI) return;
+    getMCPStatus(API_BASE)
+      .then(setMCPState)
+      .catch(() => undefined);
+  }, [showAuthedUI]);
+
+  // Load the stored MCP working-directory once we're authed, so /mcpdir [path]
+  // and a subsequent /mcp know the current value. /mcpdir can refresh it on
+  // demand. Mirrors the MCP status effect above.
+  useEffect(() => {
+    if (!showAuthedUI) return;
+    getMCPWorkdir(API_BASE)
+      .then((w) => setMCPDirState(w.value))
       .catch(() => undefined);
   }, [showAuthedUI]);
 
@@ -440,6 +459,15 @@ export default function App() {
           void applyContextLimit(arg);
         }
         break;
+      case "/mcp":
+        // arg is the spec (http(s) URL or stdio command) or "" for status-only.
+        void handleMCP(arg);
+        break;
+      case "/mcpdir":
+        // arg is the MCP working-directory to use for the default stdio MCP
+        // server; omit the arg to report the current value.
+        void handleMCPDir(arg);
+        break;
       case "/help":
         appendFeedback("ok", COMMAND_HELP_TEXT);
         break;
@@ -452,6 +480,114 @@ export default function App() {
     }
   };
 
+  // Handles the /mcp slash-command. Like the reference CLI, it reports the live
+  // connection (whether an MCP server is attached, its launch spec, the tools the
+  // model may call). It also supports connect/disconnect via a spec prompt:
+  //
+  //   /mcp            Show status.
+  //   /mcp off        Disconnect the current server.
+  //   /mcp <spec>     Connect. <spec> is an http(s):// URL (Streamable HTTP) or a
+  //                   whitespace-separated stdio command (e.g. `node ./server.js`).
+  //
+  // This uses POST /api/mcp, the runtime connect/disconnect endpoint the backend
+  // adds beside the read-only GET /api/mcp status endpoint.
+  const handleMCP = async (spec?: string) => {
+    // Fast path: an explicit spec means "connect"; "off" means "disconnect".
+    const trimmed = (spec ?? "").trim();
+    if (trimmed === "off") {
+      let status: Awaited<ReturnType<typeof disconnectMCP>>;
+      try {
+        status = await disconnectMCP(API_BASE);
+      } catch {
+        appendFeedback(
+          "error",
+          "Failed to disconnect MCP server. (It may already be disconnected.)"
+        );
+        return;
+      }
+      setMCPState(status);
+      appendFeedback("ok", "MCP server disconnected.");
+      return;
+    }
+    if (trimmed) {
+      let status: Awaited<ReturnType<typeof connectMCP>>;
+      try {
+        status = await connectMCP(API_BASE, trimmed);
+      } catch (e) {
+        appendFeedback(
+          "error",
+          "Failed to connect MCP: " + (e instanceof Error ? e.message : String(e))
+        );
+        return;
+      }
+      setMCPState(status);
+      if (!status.connected) {
+        appendFeedback("error", "MCP connection failed.");
+        return;
+      }
+      const lines = [
+        `MCP connected: ${status.spec ?? "(unknown spec)"}`,
+        `${status.tools?.length ?? 0} tool(s) available`,
+      ];
+      for (const tool of status.tools ?? []) {
+        lines.push(`  • ${tool.name}` + (tool.description ? ` — ${tool.description}` : ""));
+      }
+      appendFeedback("ok", lines.join("\n"));
+      return;
+    }
+
+    // No spec: show the read-only status.
+    let status: Awaited<ReturnType<typeof getMCPStatus>>;
+    try {
+      status = await getMCPStatus(API_BASE);
+    } catch {
+      appendFeedback("error", "Failed to read MCP status.");
+      return;
+    }
+    setMCPState(status);
+
+    if (!status.connected) {
+      appendFeedback("ok", "No MCP server connected. Try /mcp <spec>, e.g. /mcp http://localhost:8080/mcp.");
+      return;
+    }
+
+    const lines = [
+      `MCP connected: ${status.spec ?? "(unknown spec)"}`,
+      `${status.tools?.length ?? 0} tool(s) available`,
+    ];
+    for (const tool of status.tools ?? []) {
+      lines.push(`  • ${tool.name}` + (tool.description ? ` — ${tool.description}` : ""));
+    }
+    appendFeedback("ok", lines.join("\n"));
+  };
+
+  // Handles the /mcpdir slash-command. The /mcpdir command sets the working
+  // directory the default (stdio) MCP server launches in, mirroring the
+  // reference CLI's MCP_WORKDIR knob. It's stored per-user via POST /api/mcpdir
+  // and, on the backend, is applied automatically by POST /api/mcp when the
+  // connect request omits an explicit workdir — so a later `/mcp mcp.exe` runs
+  // in this directory. Omit the argument to report the current value.
+  //
+  //   /mcpdir [path]   set the MCP working-directory (empty resets it).
+  const handleMCPDir = async (value?: string) => {
+    const v = (value ?? "").trim();
+    try {
+      const updated = v === ""
+        ? await setMCPWorkdir(API_BASE, "")
+        : await setMCPWorkdir(API_BASE, v);
+      setMCPDirState(updated.value);
+      if (updated.value === "") {
+        appendFeedback("ok", "MCP working directory cleared — default stdio MCP will run in the backend cwd.");
+      } else {
+        appendFeedback("ok", `MCP working directory set to: ${updated.value}`);
+      }
+    } catch (e) {
+      appendFeedback(
+        "error",
+        "Failed to set MCP working directory: " + (e instanceof Error ? e.message : String(e))
+      );
+    }
+  };
   // Formats a token budget as a human-readable string.
   const fmt = (n: number): string =>
     Number.isFinite(n) ? n.toLocaleString() : "0";
@@ -464,9 +600,27 @@ export default function App() {
     "  /clear    Clear the conversation.\n" +
     "  /ctx [N]  Show or set the context limit (tokens). If N is omitted, " +
     "prints the current limit.\n" +
+    "  /mcp      Show the MCP connection status and list the tools the model " +
+    "may call.\n" +
+    "  /mcpdir [path]  Set the working-directory the default stdio MCP server " +
+    "runs in. Later /mcp <spec> uses it. Omit path to show the current value.\n" +
     "  /help     Show this help message.";
 
   const [settings, setSettingsState] = useState<{ context_limit: number } | null>(
+    null
+  );
+
+  // Tracks the live MCP connection status so the /mcp command can report it.
+  // Loaded once from GET /api/mcp (read-only). The value is only written back
+  // by /mcp when the user queries again; it renders its result directly via
+  // appendFeedback (no separate read needed).
+  const [, setMCPState] = useState<{ connected: boolean; spec?: string; tools: Array<{ name: string; description: string }> } | null>(
+    null
+  );
+
+  // Tracks the stored MCP working-directory so /mcpdir and a later /mcp know
+  // the current value. Loaded once from GET /api/mcpdir; refreshed by /mcpdir.
+  const [, setMCPDirState] = useState<string | null>(
     null
   );
 

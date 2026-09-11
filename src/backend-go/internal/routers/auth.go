@@ -57,6 +57,7 @@ type authUserRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	IsAdmin  bool   `json:"is_admin"`
+	AllowMcp bool   `json:"allow_mcp"`
 }
 
 // authProfileUpdate is the body for updating email/username of the caller.
@@ -181,7 +182,7 @@ func (h *authHandler) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "login_name and password are required")
 		return
 	}
-	u, err := h.db.Users.Insert(req.Username, req.Email, req.Password, req.IsAdmin)
+	u, err := h.db.Users.Insert(req.Username, req.Email, req.Password, req.IsAdmin, req.AllowMcp)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return
@@ -213,7 +214,7 @@ func (h *authHandler) handleRegisterDisabled(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "login_name and password are required")
 		return
 	}
-	u, err := h.db.Users.Insert(username, strings.TrimSpace(req.Email), req.Password, false)
+	u, err := h.db.Users.Insert(username, strings.TrimSpace(req.Email), req.Password, false, false)
 	if err != nil {
 		writeError(w, http.StatusConflict, err.Error())
 		return

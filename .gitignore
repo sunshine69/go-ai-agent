@@ -1,3 +1,4 @@
+backend-go
 jwt_secret.txt
 **/dist/**
 *.db

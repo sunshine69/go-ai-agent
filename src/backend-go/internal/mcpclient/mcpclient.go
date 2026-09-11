@@ -117,7 +117,19 @@ func (p *pipeReadWriter) Write(b []byte) (int, error) { return p.in.Write(b) }
 func (p *pipeReadWriter) Close() error {
 	p.in.Close()
 	p.out.Close()
-	return p.cmd.Wait()
+	// Graceful-exit fallback: cmd.Wait() does NOT kill the child. Give stdio MCP server a chance to exit on EOF; if it is still alive, kill it.
+	done := make(chan error, 1)
+	go func() { done <- p.cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		if p.cmd.Process != nil {
+			_ = p.cmd.Process.Kill()
+			p.cmd.Wait()
+		}
+		return fmt.Errorf("stdio MCP process still alive after graceful-exit timeout; killed it")
+	}
 }
 
 // sseReadWriteCloser wraps an io.ReadCloser to satisfy io.ReadWriteCloser
@@ -262,7 +274,10 @@ func NewManager(cfg MCPManagerConfig) (newMCP *ResilientMCPClient) {
 			return nil
 		}
 		fmt.Fprintf(os.Stderr, "🚀 Launching MCP server: %v\n", parts)
-		m, e := NewResilientStdio(parts)
+		// cfg.MCPWorkDir may be absolute (the default is the process cwd) or
+		// relative; NewResilientStdio resolves it to a valid directory and sets
+		// the child's cmd.Dir, or falls back to the process cwd if unresolved.
+		m, e := NewResilientStdio(parts, cfg.MCPWorkDir)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "❌ MCP connect failed: %v\n", e)
 			return nil
@@ -277,7 +292,7 @@ func NewManager(cfg MCPManagerConfig) (newMCP *ResilientMCPClient) {
 	}
 	parts := strings.Fields(cfg.MCPServerPath)
 	fmt.Fprintf(os.Stderr, "🚀 Launching MCP stdio server: %v\n", parts)
-	m, err := NewResilientStdio(parts)
+	m, err := NewResilientStdio(parts, cfg.MCPWorkDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "❌ MCP connect failed: %v\n", err)
 		return nil
@@ -305,6 +320,45 @@ func ConnectStreamableHTTP(url string) (*MCPClient, error) {
 		return nil, err
 	}
 	return c, nil
+}
+
+// Connect launches or connects to an MCP server from the /mcp command spec,
+// mirroring NewManager's transport selection but driven at runtime by the /mcp
+// slash command rather than at startup by config. A spec beginning with http:// or
+// https:// connects via Streamable HTTP; anything else is whitespace-split and
+// launched as a stdio server. The block-list is applied to the returned client. The
+// returned client is a fresh ResilientMCPClient — the caller is responsible for
+// swapping it into the shared manager (see Swap) so every backend handler sees it.
+// Returns an error without mutating any global state on failure.
+func Connect(spec string, blockList string, workdir string) (*ResilientMCPClient, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil, fmt.Errorf("empty MCP spec")
+	}
+
+	var m *ResilientMCPClient
+	var err error
+	if strings.HasPrefix(spec, "http://") || strings.HasPrefix(spec, "https://") {
+		raw, e := ConnectStreamableHTTP(spec)
+		if e != nil {
+			fmt.Fprintf(os.Stderr, "❌ MCP connect failed: %v\n", e)
+			return nil, e
+		}
+		m = NewResilientPassthrough(raw)
+	} else {
+		parts := strings.Fields(spec)
+		if len(parts) == 0 {
+			return nil, fmt.Errorf("empty MCP command")
+		}
+		m, err = NewResilientStdio(parts, workdir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ MCP connect failed: %v\n", err)
+			return nil, err
+		}
+	}
+	m.blockRe = compileBlockList(blockList)
+	fmt.Fprintf(os.Stderr, "✅ MCP connected via /mcp: %s (%d tool(s))\n", m.Spec, len(m.Tools()))
+	return m, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -701,24 +755,63 @@ type ResilientMCPClient struct {
 	Inner   *MCPClient
 	parts   []string
 	// For reconnect, the argv used to launch the stdio server.
+	// workdir is the resolved absolute directory the stdio child runs in. It is
+	// set only for stdio transports (empty for Streamable HTTP) and threaded
+	// through ConnectStdio so the child actually chdir's there; the value is
+	// also carried across reconnect so an auto-restarted child keeps cwd.
+	workdir      string
+	hasWorkdir   bool
 	partsForConnect []string
-	maxRetry        int
-	backoff         time.Duration
-	Spec            string
+	maxRetry     int
+	backoff      time.Duration
+	Spec         string
 }
 
-func NewResilientStdio(parts []string) (*ResilientMCPClient, error) {
-	inner, err := ConnectStdio(parts)
+func NewResilientStdio(parts []string, workdir string) (*ResilientMCPClient, error) {
+	// Resolve the workdir to an absolute, existing path (creating it if
+	// necessary) once so the child launch and every reconnect share the same
+	// directory. A workdir of "." is treated as "no workdir" so stdio servers
+	// fall back to the backend process cwd, preserving prior behaviour.
+	resolved, isResolved := resolveConnectWorkdir(workdir)
+	inner, err := ConnectStdio(parts, resolved)
 	if err != nil {
 		return nil, err
 	}
 	return &ResilientMCPClient{
 		Inner:           inner,
 		partsForConnect: parts,
-		maxRetry:        3,
-		backoff:         500 * time.Millisecond,
-		Spec:            inner.spec,
+		// Persist the resolved workdir on the struct so reconnect() reuses the
+		// same directory for an auto-restarted child.
+		workdir:      resolved,
+		hasWorkdir:   isResolved,
+		maxRetry:      3,
+		backoff:       500 * time.Millisecond,
+		Spec:          inner.spec,
 	}, nil
+}
+
+// resolveConnectWorkdir validates and resolves a requested workdir. It returns
+// an empty string (meaning "use the backend process cwd") for empty input or a
+// literal ".", and otherwise resolves p to an absolute path, creating the
+// directory if missing. It returns the resolved path and whether it was
+// non-empty/resolvable so the caller knows whether to carry the workdir across
+// reconnects.
+func resolveConnectWorkdir(p string) (string, bool) {
+	if strings.TrimSpace(p) == "" || strings.TrimSpace(p) == "." {
+		return "", false
+	}
+	if !isValidWorkDir(p) {
+		// Report the rejected value on stderr so operators can see what was
+		// refused, then fall back to the backend process cwd.
+		fmt.Fprintf(os.Stderr, "⚠️  MCP workdir %q rejected (must be relative with no \"..\" component); using process cwd\n", p)
+		return "", false
+	}
+	dir, err := resolveWorkDir(p)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  MCP workdir %q unusable (%v); using process cwd\n", p, err)
+		return "", false
+	}
+	return dir, true
 }
 
 func NewResilientPassthrough(c *MCPClient) *ResilientMCPClient {
@@ -735,7 +828,13 @@ func (r *ResilientMCPClient) reconnect() error {
 	fmt.Fprintln(os.Stderr, "🔄 MCP server died — reconnecting…")
 	var lastErr error
 	for attempt := 1; attempt <= r.maxRetry; attempt++ {
-		c, err := ConnectStdio(r.partsForConnect)
+		// Reuse the resolved workdir from the original launch so an
+		// auto-restarted child runs in the same directory.
+		wd := ""
+		if r.hasWorkdir {
+			wd = r.workdir
+		}
+		c, err := ConnectStdio(r.partsForConnect, wd)
 		if err == nil {
 			r.Inner = c
 			fmt.Fprintf(os.Stderr, "✅ MCP reconnected (attempt %d)\n", attempt)
@@ -771,6 +870,10 @@ func (r *ResilientMCPClient) CallTool(name string, arguments map[string]interfac
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if r.Inner == nil {
+		return "", fmt.Errorf("no MCP server connected")
+	}
+
 	result, err := r.Inner.CallTool(name, arguments)
 	if err == nil {
 		return result, nil
@@ -790,6 +893,9 @@ func (r *ResilientMCPClient) CallTool(name string, arguments map[string]interfac
 func (r *ResilientMCPClient) Tools() []mcpTool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.Inner == nil {
+		return nil
+	}
 	all := r.Inner.Tools()
 	return applyBlockFilter(all, r.blockRe)
 }
@@ -797,20 +903,37 @@ func (r *ResilientMCPClient) Tools() []mcpTool {
 func (r *ResilientMCPClient) Resources() ([]mcpResource, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.Inner == nil {
+		return nil, fmt.Errorf("no MCP server connected")
+	}
 	return r.Inner.Resources()
 }
 
 func (r *ResilientMCPClient) ReadResource(uri string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.Inner == nil {
+		return "", fmt.Errorf("no MCP server connected")
+	}
 	return r.Inner.ReadResource(uri)
 }
-
 func (r *ResilientMCPClient) refreshTools() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.Inner == nil {
+		return fmt.Errorf("no MCP server connected")
+	}
 	return r.Inner.refreshTools()
 }
+
+// RefreshTools re-queries the MCP server for its current tool list. It is the
+// exported counterpart of refreshTools so the backend can expose an MCP
+// "refresh" action (e.g. via an HTTP endpoint) without leaking the private
+// refreshTools symbol. It returns an error when no server is connected.
+func (r *ResilientMCPClient) RefreshTools() error {
+	return r.refreshTools()
+}
+
 
 func (r *ResilientMCPClient) Close() error {
 	r.mu.Lock()
@@ -821,15 +944,46 @@ func (r *ResilientMCPClient) Close() error {
 	return nil
 }
 
+// Swap replaces this object's inner client in place with another ResilientMCPClient.
+// Every backend handler stores a *copy* of this *ResilientMCPClient pointer (see
+// Handlers), so all handlers, context providers, and the tool-use controller read
+// the same underlying object. Mutating this object in place — rather than
+// reassigning the pointer field on each handler — is what propagates a
+// connect/disconnect to every reader. Passing a nil client swaps the inner client
+// out entirely (closing any live inner) while keeping the ResilientMCPClient alive;
+// the nil-guarded Tools()/CallTool()/Resources()/ReadResource() then report
+// "no MCP server connected" instead of panicking.
+func (r *ResilientMCPClient) Swap(other *ResilientMCPClient) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.Inner != nil { // Close the OLD inner on every replacement (reconnect OR disconnect), so the previous child process never leaks.
+		_ = r.Inner.Close()
+	}
+	r.Inner = nil
+	r.Spec = ""
+	if other != nil {
+		r.Inner = other.Inner
+		r.Spec = other.Spec
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ConnectStdio launches a local MCP server process and communicates via stdio.
 // ---------------------------------------------------------------------------
 
-func ConnectStdio(parts []string) (*MCPClient, error) {
+func ConnectStdio(parts []string, workdir string) (*MCPClient, error) {
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
 	cmd := exec.Command(parts[0], parts[1:]...)
+	// Set the working directory the child process runs in, if provided. An
+	// empty workdir leaves the child inheriting the backend process cwd (the
+	// prior behaviour); a non-empty one makes cmd.Dir point the child there so
+	// the stdio server's relative file access and CWD-based discovery target
+	// the operator's chosen directory rather than wherever the backend started.
+	if w := strings.TrimSpace(workdir); w != "" {
+		cmd.Dir = w
+	}
 	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()

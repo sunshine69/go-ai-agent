@@ -56,12 +56,38 @@ func main() {
 	}
 
 	fmt.Printf("[DEBUG] config %v\n", cfg)
+
+	// --- DB: application datastore (users, conversations, messages) --------
+	// The DB-backed auth & conversations endpoints require this. When left nil
+	// (see below), those endpoints would panic at request time, so we must
+	// open the store and pass it through to routers.Handlers. It is opened
+	// before the MCP manager so the default (user-0) server can inherit any
+	// per-user mcpWorkdir setting chosen via /mcpdir.
+	d, err := db.Open(cfg.DBPath, cfg.DBDriver) // "sqlite3" default (SQLite)
+	if err != nil {
+		log.Fatalf("db open: %v", err)
+	}
+	defer d.Close()
+	// Seed the initial admin account if none exists yet.
+	if _, err := d.SeedAdmin("admin", "admin@example.com", "admin"); err != nil {
+		log.Printf("warning: seed admin failed: %v", err)
+	}
+
 	// --- MCP manager -------------------------------------------------------
 	var manager *mcpclient.ResilientMCPClient
 	if cfg.MCPEnabled {
+		// /mcpdir seed: inherit the calling user's (uid 0) per-user
+		// "mcpWorkdir" setting so the default (user-0) server runs in the
+		// directory the operator chose at runtime. ResolveDefaultMCPWorkdir
+		// re-validates the stored value and returns ("", false) when unset or
+		// invalid, in which case the configured MCPWorkDir is used unchanged.
+		workdir := cfg.MCPWorkDir
+		if wd, ok := mcpclient.DefaultMCPWorkdir(d, 0); ok {
+			workdir = wd
+		}
 		manager = mcpclient.NewManager(mcpclient.MCPManagerConfig{
 			MCPServerPath:  cfg.MCPServerPath,
-			MCPWorkDir:     cfg.MCPWorkDir,
+			MCPWorkDir:     workdir,
 			MCPToolExecCmd: cfg.MCPToolExecCmd,
 			MCPServerURL:   cfg.MCPServerURL,
 			MCPBlockList:   cfg.MCPBlockList,
@@ -112,29 +138,10 @@ func main() {
 		log.Println("RAG disabled")
 	}
 
-	// --- DB: application datastore (users, conversations, messages) --------
-	// The DB-backed auth & conversations endpoints require this. When left nil
-	// (see below), those endpoints would panic at request time, so we must
-	// open the store and pass it through to routers.Handlers.
-	d, err := db.Open(cfg.DBPath, cfg.DBDriver) // "sqlite3" default (SQLite)
-	if err != nil {
-		log.Fatalf("db open: %v", err)
-	}
-	defer d.Close()
-	// Seed the initial admin account if none exists yet.
-	if _, err := d.SeedAdmin("admin", "admin@example.com", "admin"); err != nil {
-		log.Printf("warning: seed admin failed: %v", err)
-	}
-
 	// --- Handlers ----------------------------------------------------------
-	h := routers.Handlers{
-		Manager:  manager,
-		LLM:      llmClient,
-		Rag:      rag,
-		Cfg:      cfg,
-		DB:       d,
-		Frontend: frontend,
-	}
+	// Build a per-user MCP manager over the shared default (possibly nil).
+	mgr := mcpclient.NewMCPManager(manager)
+	h := routers.NewHandlers(mgr, llmClient, rag, cfg, d, frontend)
 
 	mux := h.ServeMux()
 

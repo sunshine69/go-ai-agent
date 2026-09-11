@@ -30,7 +30,7 @@ func newFormsHandler(h Handlers) *formsHandler {
 func (c *formsHandler) handle(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 
-	if c.h.Manager == nil {
+	if c.h.mcpClient(r) == nil {
 		writeError(w, http.StatusInternalServerError, "MCP manager unavailable")
 		return
 	}
@@ -44,7 +44,7 @@ func (c *formsHandler) handle(w http.ResponseWriter, r *http.Request) {
 		toolName = "forms_list"
 	}
 
-	result, err := c.h.Manager.CallTool(toolName, args)
+	result, err := c.h.mcpClient(r).CallTool(toolName, args)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "MCP error: "+err.Error())
 		return

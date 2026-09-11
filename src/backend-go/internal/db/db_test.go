@@ -63,7 +63,7 @@ func TestDBLifecycle(t *testing.T) {
 	}
 
 	// Create non-admin user
-	other, err := d.Users.Insert("bob", "bob@example.com", "bobpass", false)
+	other, err := d.Users.Insert("bob", "bob@example.com", "bobpass", false, false)
 	if err != nil {
 		t.Fatalf("insert other: %v", err)
 	}

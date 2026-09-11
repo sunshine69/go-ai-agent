@@ -50,14 +50,10 @@ func (c *documentsHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	trimmed := strings.Trim(path, "/")
-	// /api/documents/{id}/content
-	if idx := strings.Index(trimmed, "/content/"); idx >= 0 {
-		_ = idx
-	}
 	if strings.HasSuffix(trimmed, "/content") {
 		parts := strings.SplitN(trimmed, "/content", 2)
 		id := parts[0]
-		c.getContent(w, id)
+		c.getContent(w, r, id)
 		return
 	}
 
@@ -66,7 +62,7 @@ func (c *documentsHandler) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *documentsHandler) listAll(w http.ResponseWriter) {
-	result := c.documentsList(w, nil)
+	result := c.documentsList(nil, w, nil)
 	if result == "" {
 		return
 	}
@@ -81,7 +77,7 @@ func (c *documentsHandler) listAll(w http.ResponseWriter) {
 }
 
 func (c *documentsHandler) listCategory(w http.ResponseWriter, category string) {
-	result := c.documentsList(w, map[string]interface{}{"collection": category})
+	result := c.documentsList(nil, w, map[string]interface{}{"collection": category})
 	if result == "" {
 		return
 	}
@@ -95,12 +91,13 @@ func (c *documentsHandler) listCategory(w http.ResponseWriter, category string) 
 	writeJSON(w, http.StatusOK, docs)
 }
 
-func (c *documentsHandler) getContent(w http.ResponseWriter, id string) {
-	if c.h.Manager == nil {
+func (c *documentsHandler) getContent(w http.ResponseWriter, r *http.Request, id string) {
+	client := c.h.mcpClient(r)
+	if client == nil {
 		writeError(w, http.StatusInternalServerError, "MCP manager unavailable")
 		return
 	}
-	result, err := c.h.Manager.CallTool("documents_get_content", map[string]interface{}{"document_id": id})
+	result, err := client.CallTool("documents_get_content", map[string]interface{}{"document_id": id})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "MCP error: "+err.Error())
 		return
@@ -108,12 +105,13 @@ func (c *documentsHandler) getContent(w http.ResponseWriter, id string) {
 	writeJSON(w, http.StatusOK, map[string]string{"content": result})
 }
 
-func (c *documentsHandler) documentsList(w http.ResponseWriter, args map[string]interface{}) string {
-	if c.h.Manager == nil {
+func (c *documentsHandler) documentsList(r *http.Request, w http.ResponseWriter, args map[string]interface{}) string {
+	client := c.h.mcpClient(r)
+	if client == nil {
 		writeError(w, http.StatusInternalServerError, "MCP manager unavailable")
 		return ""
 	}
-	result, err := c.h.Manager.CallTool("documents_list", args)
+	result, err := client.CallTool("documents_list", args)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "MCP error: "+err.Error())
 		return ""

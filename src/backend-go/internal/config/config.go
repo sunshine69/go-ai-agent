@@ -198,25 +198,25 @@ func Load(envDotPath string) *Config {
 	rAGDocsDir := envKey("RAG_DOCS_DIR", filepath.Join(wd, "resources", "rag_documents"))
 
 	cfg := &Config{
-		Host:              envKey("HOST", "0.0.0.0"),
-		Port:              envKey("PORT", "8000"),
-		LLMModel:          envKey("LLM_MODEL", "gpt-4o"),
-		LLMAPIKey:         envKey("LLM_API_KEY", "sk-placeholder"),
-		LLMBASEURL:        envKey("LLM_BASE_URL", ""),
-		LLMTemperature:    envFloat("LLM_TEMPERATURE", 0.1),
-		LLMTimeout:        timeoutDuration("LLM_TIMEOUT", 45*time.Minute),
-		LLMBackend:        envKey("LLM_BACKEND", ""), // "", "llama_cpp", or "ollama"
+		Host:           envKey("HOST", "0.0.0.0"),
+		Port:           envKey("PORT", "8000"),
+		LLMModel:       envKey("LLM_MODEL", "gpt-4o"),
+		LLMAPIKey:      envKey("LLM_API_KEY", "sk-placeholder"),
+		LLMBASEURL:     envKey("LLM_BASE_URL", "http://localhost:11434"),
+		LLMTemperature: envFloat("LLM_TEMPERATURE", 0.1),
+		LLMTimeout:     timeoutDuration("LLM_TIMEOUT", 45*time.Minute),
+		LLMBackend:     envKey("LLM_BACKEND", ""), // "", "llama_cpp", or "ollama"
 
 		// Context compression defaults. These are env-driven to mirror the
 		// reference app's config knobs; they all default to disabled so the
 		// Go backend's default behaviour is unchanged until an operator turns
 		// the feature on.
-		ContextLimit:         envInt("CONTEXT_LIMIT", 0),
-		CtxOverSizeAllowed:   envInt("CTX_OVER_SIZE_ALLOWED", 0),
-		SummaryModel:         envKey("SUMMARY_MODEL", ""),
-		SummaryModelUrl:      envKey("SUMMARY_MODEL_URL", ""),
-		SummaryModelTimeout:  envKey("SUMMARY_MODEL_TIMEOUT", "60s"),
-		ShowThinking:         envBool("SHOW_THINKING", false),
+		ContextLimit:        envInt("CONTEXT_LIMIT", 0),
+		CtxOverSizeAllowed:  envInt("CTX_OVER_SIZE_ALLOWED", 0),
+		SummaryModel:        envKey("SUMMARY_MODEL", ""),
+		SummaryModelUrl:     envKey("SUMMARY_MODEL_URL", ""),
+		SummaryModelTimeout: envKey("SUMMARY_MODEL_TIMEOUT", "60s"),
+		ShowThinking:        envBool("SHOW_THINKING", false),
 
 		MCPEnabled:        envBool("MCP_ENABLED", true),
 		MCPServerPath:     envKey("MCP_SERVER_PATH", "geniq-mcp-server"),
@@ -231,7 +231,7 @@ func Load(envDotPath string) *Config {
 		RAGSearchLimit:    envInt("RAG_SEARCH_LIMIT", 5),
 		RAGScoreThreshold: envFloat("RAG_SCORE_THRESHOLD", 0.25),
 		RAGDBPath:         envKey("RAG_DB_PATH", filepath.Join(wd, ".geniq_rag.db")),
-		RAGEmbeddingModel: envKey("RAG_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
+		RAGEmbeddingModel: envKey("RAG_EMBEDDING_MODEL", "nomic-embed"),
 	}
 	// DB: application datastore (users, conversations, messages). SQLite is the
 	// default driver; pass a registered driver name for PostgreSQL.
@@ -249,7 +249,7 @@ func Load(envDotPath string) *Config {
 
 	// Embedding dimension: 384 is the dimension of all-MiniLM-L6-v2 (the default
 	// model). Override via EMBEDDING_DIM for other models.
-	cfg.EmbeddingDim = envInt("EMBEDDING_DIM", 384)
+	cfg.EmbeddingDim = envInt("EMBEDDING_DIM", 768)
 
 	// --- CORS --------------------------------------------------------------
 	// --- Tool-use feature flags --------------------------------------------

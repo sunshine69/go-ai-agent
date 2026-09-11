@@ -62,6 +62,66 @@ export async function changePassword(
     throw new Error(await readErrorText(res));
   }
 }
+
+/** MCPConnection is the client-facing view of the MCP connection, matching
+ * the mcpStatusResponse returned by GET /api/mcp. It reports whether a live MCP
+ * server is attached (connected), its launch spec, and the tools the model may
+ * call. Empty when not connected. */
+export interface MCPConnection {
+  connected: boolean;
+  spec?: string;
+  tools: Array<{ name: string; description: string }>;
+  error?: string;
+}
+
+/** Returns the current MCP connection status. GET /api/mcp. Never connects or
+ * disconnects a server — it only reports the live connection the server holds. */
+export async function getMCPStatus(apiBaseUrl: string): Promise<MCPConnection> {
+  return getJSON<MCPConnection>(apiBaseUrl, "/api/mcp");
+}
+
+/** connectMCP launches an MCP server at runtime. POST /api/mcp. The spec is an
+ * http(s):// URL (Streamable HTTP) or a whitespace-separated stdio command. It
+ * reports back the resulting connection. */
+export async function connectMCP(
+  apiBaseUrl: string,
+  spec: string
+): Promise<MCPConnection> {
+  return postJSON<MCPConnection>(apiBaseUrl, "/api/mcp", {
+    action: "connect",
+    spec,
+  });
+}
+
+/** disconnectMCP drops the live MCP server. POST /api/mcp. */
+export async function disconnectMCP(apiBaseUrl: string): Promise<MCPConnection> {
+  return postJSON<MCPConnection>(apiBaseUrl, "/api/mcp", {
+    action: "disconnect",
+    spec: "",
+  });
+}
+// MCPWorkdir is the client-facing view of the per-user MCP working-directory
+// selector, matching the mcpdirResponse returned by GET/POST /api/mcpdir.
+export interface MCPWorkdir {
+  value: string;
+}
+
+/** Returns the caller's stored MCP working-directory selector. GET /api/mcpdir.
+ * The value is a relative path with no ".." component (e.g. "mcp_data"); empty
+ * when unset, meaning the stdio MCP child runs in the backend process cwd. */
+export async function getMCPWorkdir(apiBaseUrl: string): Promise<MCPWorkdir> {
+  return getJSON<MCPWorkdir>(apiBaseUrl, "/api/mcpdir");
+}
+
+/** setMCPWorkdir stores (or, with an empty payload, clears) the caller's MCP
+ * working-directory selector. POST /api/mcpdir. The /mcpdir slash command uses
+ * this so a later /mcp <spec> runs its stdio child in this directory. */
+export async function setMCPWorkdir(
+  apiBaseUrl: string,
+  value: string
+): Promise<MCPWorkdir> {
+  return postJSON<MCPWorkdir>(apiBaseUrl, "/api/mcpdir", { value });
+}
 /**
  * A fetch wrapper that attaches the bearer token and understands backend
  * auth-rejection semantics.

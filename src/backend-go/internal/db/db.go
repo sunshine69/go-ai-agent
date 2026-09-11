@@ -90,6 +90,7 @@ func (d *DB) migrate() error {
         email         TEXT NOT NULL DEFAULT '',
         password_hash TEXT NOT NULL,
         is_admin      INTEGER NOT NULL DEFAULT 0,
+        allow_mcp     INTEGER NOT NULL DEFAULT 0,
         created_at    TEXT NOT NULL DEFAULT (datetime('now')),
         last_login    TEXT
     );
@@ -191,6 +192,7 @@ func (d *DB) migrateSchema() error {
 	}{
 		{"messages", "tool_calls", `TEXT NOT NULL DEFAULT '[]'`},
 		{"messages", "tool_call_id", `TEXT NOT NULL DEFAULT ''`},
+		{"users", "allow_mcp", `INTEGER NOT NULL DEFAULT 0`},
 	}
 
 	for _, m := range migrations {

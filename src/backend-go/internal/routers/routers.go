@@ -30,7 +30,10 @@ import (
 // Handlers bundles the dependencies shared by all handlers. It is passed through
 // to each handler struct so routing logic stays uniform.
 type Handlers struct {
-	Manager *mcpclient.ResilientMCPClient
+	// mcp resolves the active MCP server per caller at request time. Each
+	// handler stores a copy of Handlers, so this pointer is read in the
+	// handler's own goroutine against the authenticated request.
+	mcp *mcpclient.MCPManager
 
 	// LLM is the OpenAI-compatible client used by the messages handler.
 	LLM *llm.Client
@@ -48,11 +51,41 @@ type Handlers struct {
 	Frontend *serving.Server
 }
 
+// NewHandlers builds a Handlers with an MCP manager bound to a shared default
+// (possibly nil) client. It exists so callers outside the package (e.g. main) can
+// construct Handlers without touching the unexported mcp field.
+func NewHandlers(mcpManager *mcpclient.MCPManager, llmClient *llm.Client, rag *ragstore.RAGStore, cfg *config.Config, db *db.DB, frontend *serving.Server) Handlers {
+	return Handlers{
+		mcp:      mcpManager,
+		LLM:      llmClient,
+		Rag:      rag,
+		Cfg:      cfg,
+		DB:       db,
+		Frontend: frontend,
+	}
+}
+
 // Cors returns the effective CORS settings for the middleware, sourced from the
 // backend configuration.
 func (h Handlers) Cors() config.Cors {
 	return h.Cfg.Cors()
 }
+
+// mcpClient returns the MCP client bound to this request's authenticated caller.
+// When the caller cannot be resolved (no/invalid token) it returns the shared
+// default, mirroring the pre-multi-user behaviour of serving every request from
+// the single process-wide server. A nil return means "no MCP server connected" —
+// callers must nil-guard their reads.
+func (h *Handlers) mcpClient(r *http.Request) *mcpclient.ResilientMCPClient {
+	if h.mcp == nil {
+		return nil
+	}
+	if uid, ok := currentUserID(r); ok {
+		return h.mcp.Client(uid)
+	}
+	return h.mcp.Default()
+}
+
 // applyUserCtxLimit returns a config suitable for the request's authenticated
 // caller, honouring their stored per-user ctxLimit setting (via /ctx). When the
 // user has no valid setting it returns cfg unchanged. It is nil-safe.
@@ -87,16 +120,18 @@ func (h Handlers) ServeMux() http.Handler {
 	forms := newFormsHandler(h)
 	processes := newProcessesHandler(h)
 	auth := newAuthHandler(h.DB)
+	mcp := newMCPHandler(h)
+	mcpdir := newMCPdirHandler(h.DB)
 	settings := newSettingsHandler(h.DB)
 
 	mux.HandleFunc("/api/domains", requireAuth(domains.handle))
 	mux.HandleFunc("/api/messages", requireAuth(messages.handle))
-	mux.HandleFunc("/api/messages/stream", requireAuth(messagesStream.proxyLLMStream)) // Direct proxy to LLM
-	mux.HandleFunc("/api/chat/stream", requireAuth(messagesStream.handleStreamChat))   // Alternative SSE format endpoint
-	mux.HandleFunc("/api/conversations", conversations.handleListAndCreate)            // GET (list), POST (create)
-	mux.HandleFunc("DELETE /api/conversations", conversations.handleClearAll)          // DELETE (clear all) — no trailing slash, method-specific pattern wins
+	mux.HandleFunc("/api/messages/stream", requireAuth(messagesStream.proxyLLMStream))    // Direct proxy to LLM
+	mux.HandleFunc("/api/chat/stream", requireAuth(messagesStream.handleStreamChat))      // Alternative SSE format endpoint
+	mux.HandleFunc("/api/conversations", conversations.handleListAndCreate)               // GET (list), POST (create)
+	mux.HandleFunc("DELETE /api/conversations", conversations.handleClearAll)             // DELETE (clear all) — no trailing slash, method-specific pattern wins
 	mux.HandleFunc("POST /api/conversations/bulk-delete", conversations.handleDeleteMany) // multi-select delete
-	mux.HandleFunc("/api/conversations/", conversations.handleByID)                    // GET, DELETE /{id} (a single conversation)
+	mux.HandleFunc("/api/conversations/", conversations.handleByID)                       // GET, DELETE /{id} (a single conversation)
 	mux.HandleFunc("/api/confluence/search", confluence.handleSearch)
 	mux.HandleFunc("/api/documents/", documents.handle)
 	mux.HandleFunc("/api/forms", forms.handle)
@@ -105,17 +140,21 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("/api/auth/login", auth.handleLogin)
 	mux.HandleFunc("/api/auth/me", auth.handleMe)
 	// --- New DB-backed auth endpoints (multi-user) ---
-	mux.HandleFunc("/api/auth/logout", auth.handleLogout)                      // POST
-	mux.HandleFunc("GET /api/auth/users", auth.handleUsers)                    // GET (list)
-	mux.HandleFunc("POST /api/auth/users", auth.handleCreateUser)              // POST (create)
-	mux.HandleFunc("/api/auth/users/", auth.handleDeleteUser)                  // DELETE /{id}
-	mux.HandleFunc("GET /api/auth/me/profile", auth.handleProfile)             // GET (read)
-	mux.HandleFunc("PATCH /api/auth/me/profile", auth.handleProfileUpdate)     // PATCH
+	mux.HandleFunc("/api/auth/logout", auth.handleLogout)                  // POST
+	mux.HandleFunc("GET /api/auth/users", auth.handleUsers)                // GET (list)
+	mux.HandleFunc("POST /api/auth/users", auth.handleCreateUser)          // POST (create)
+	mux.HandleFunc("/api/auth/users/", auth.handleDeleteUser)              // DELETE /{id}
+	mux.HandleFunc("GET /api/auth/me/profile", auth.handleProfile)         // GET (read)
+	mux.HandleFunc("PATCH /api/auth/me/profile", auth.handleProfileUpdate) // PATCH
 	// --- Per-user settings (supports the /ctx and /help commands) ---
+	mux.HandleFunc("GET /api/mcp", requireAuth(mcp.handleStatus))
+	mux.HandleFunc("POST /api/mcp", requireAuth(mcp.handleConnect))
 	mux.HandleFunc("GET /api/settings", requireAuth(settings.handleList))
 	mux.HandleFunc("POST /api/settings", requireAuth(settings.handleSet))
 	mux.HandleFunc("/api/auth/me/profile/password", auth.handlePasswordChange) // POST
 
+	mux.HandleFunc("GET /api/mcpdir", requireAuth(mcpdir.handleList))
+	mux.HandleFunc("POST /api/mcpdir", requireAuth(mcpdir.handleSet))
 	// Serve the SPA (if configured) at /frontend/* before the /api/* mux, so
 	// frontend requests are handled by the static file server rather than the
 	// child mux. Registered on the top-level mux only (not on `mux`, the /api

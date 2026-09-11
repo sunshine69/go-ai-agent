@@ -18,12 +18,13 @@ func newConfluenceHandler(h Handlers) *confluenceHandler {
 func (c *confluenceHandler) handleSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 
-	if c.h.Manager == nil {
+	client := c.h.mcpClient(r)
+	if client == nil {
 		writeError(w, http.StatusInternalServerError, "MCP manager unavailable")
 		return
 	}
 
-	result, err := c.h.Manager.CallTool("confluence_search", map[string]interface{}{
+	result, err := client.CallTool("confluence_search", map[string]interface{}{
 		"keyword": q,
 	})
 	if err != nil {
