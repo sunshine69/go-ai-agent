@@ -3,6 +3,7 @@ import { Domain } from "../types";
 import { AuthUser } from "../utils/token";
 import { deleteConversations } from "../utils/api";
 import { ChangePassword } from "./ChangePassword";
+import { SettingsPanel } from "./SettingsPanel";
 import { UserManagement } from "./UserManagement";
 
 interface Conversation {
@@ -29,6 +30,7 @@ interface SidebarProps {
   domains: Domain[];
   user: AuthUser | null;
   onLogout: () => Promise<void> | void;
+  onClearConversation: () => void;
 }
 
 // Format an ISO/RFC3339 timestamp into a compact single-line, human-readable
@@ -67,6 +69,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   domains,
   user,
   onLogout,
+  onClearConversation,
 }) => {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [showUserPanel, setShowUserPanel] = useState(false);
@@ -448,6 +451,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* User settings panel (change password for all; admin panel for admins) */}
       {showUserPanel && user && (
         <div className="sidebar-user-panel">
+          <SettingsPanel apiBaseUrl={apiBaseUrl} onClearConversation={onClearConversation} />
           <ChangePassword apiBaseUrl={apiBaseUrl} />
           {user.is_admin && <UserManagement apiBaseUrl={apiBaseUrl} />}
         </div>

@@ -79,6 +79,30 @@ export async function changePassword(
 
 import { getToken } from "./token";
 
+// --- Per-user application settings (see routers/settings.go) ---
+
+// SettingsResponse is the client-facing view of a user's settings as returned
+// by GET/POST /api/settings. context_limit is the decoded ctxLimit (the
+// per-user context token budget; defaults to 50000 when unset), and raw holds
+// every stored key/value pair (values always strings).
+export interface SettingsResponse {
+  context_limit: number;
+  raw: Record<string, string>;
+}
+
+/** Returns the caller's decoded settings (context_limit) plus the raw map. */
+export async function getSettings(apiBaseUrl: string): Promise<SettingsResponse> {
+  return getJSON<SettingsResponse>(apiBaseUrl, "/api/settings");
+}
+
+/** Sets a single setting for the caller (only the "ctxLimit" key is accepted). */
+export async function setSetting(
+  apiBaseUrl: string,
+  payload: { key: string; value: string }
+): Promise<SettingsResponse> {
+  return postJSON<SettingsResponse>(apiBaseUrl, "/api/settings", payload);
+}
+
 export class AuthError extends Error {
   constructor(status: number, message: string) {
     super(message);

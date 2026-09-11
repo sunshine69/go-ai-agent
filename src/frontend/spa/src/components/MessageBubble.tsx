@@ -22,10 +22,23 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const [showConfluence, setShowConfluence] = useState(false);
   const isUser = role === "user";
 
+  // Command feedback (e.g. /ctx) is rendered as a retained, styled assistant
+  // message with `error` prefixed "command_result:<type>". This distinguishes
+  // it from streaming errors and lets it sit visually in the main chat flow.
+  const cmdType = error?.startsWith("command_result:")
+    ? error.replace("command_result:", "")
+    : "";
+  const isCommandResult = cmdType !== "";
+
   // For assistant messages with markdown content
   if (role === "assistant" && !isStreaming) {
     return (
-      <div className={`message-bubble ${isUser ? "user" : "assistant"}`}>
+      <div
+        className={
+          `message-bubble ${isUser ? "user" : "assistant"}` +
+          (isCommandResult ? ` cmd-${cmdType}` : "")
+        }
+      >
         {/* Render HTML from marked markdown */}
         <div 
           className="message-content"
@@ -101,7 +114,12 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
 
   // For streaming content and user messages, display as raw text
   return (
-    <div className={`message-bubble ${isUser ? "user" : "assistant"}`}>
+    <div
+      className={
+        `message-bubble ${isUser ? "user" : "assistant"}` +
+        (isCommandResult ? ` cmd-${cmdType}` : "")
+      }
+    >
       <div className="message-content">
         {isStreaming && (
           <span className="streaming-cursor">|</span>

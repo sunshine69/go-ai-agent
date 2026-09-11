@@ -53,6 +53,25 @@ type Handlers struct {
 func (h Handlers) Cors() config.Cors {
 	return h.Cfg.Cors()
 }
+// applyUserCtxLimit returns a config suitable for the request's authenticated
+// caller, honouring their stored per-user ctxLimit setting (via /ctx). When the
+// user has no valid setting it returns cfg unchanged. It is nil-safe.
+func (h *Handlers) applyUserCtxLimit(cfg *config.Config, r *http.Request) *config.Config {
+	if cfg == nil {
+		return cfg
+	}
+	if h.DB == nil || h.DB.Settings == nil {
+		return cfg
+	}
+	if uid, ok := currentUserID(r); !ok {
+		return cfg
+	} else if n, valid := resolveCtxLimit(h.DB, uid); valid {
+		out := *cfg
+		out.ContextLimit = n
+		return &out
+	}
+	return cfg
+}
 
 // ServeMux builds the router for the backend: the /api/* handlers plus, when
 // configured, the /frontend/* SPA static file server.
@@ -68,6 +87,7 @@ func (h Handlers) ServeMux() http.Handler {
 	forms := newFormsHandler(h)
 	processes := newProcessesHandler(h)
 	auth := newAuthHandler(h.DB)
+	settings := newSettingsHandler(h.DB)
 
 	mux.HandleFunc("/api/domains", requireAuth(domains.handle))
 	mux.HandleFunc("/api/messages", requireAuth(messages.handle))
@@ -91,6 +111,9 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("/api/auth/users/", auth.handleDeleteUser)                  // DELETE /{id}
 	mux.HandleFunc("GET /api/auth/me/profile", auth.handleProfile)             // GET (read)
 	mux.HandleFunc("PATCH /api/auth/me/profile", auth.handleProfileUpdate)     // PATCH
+	// --- Per-user settings (supports the /ctx and /help commands) ---
+	mux.HandleFunc("GET /api/settings", requireAuth(settings.handleList))
+	mux.HandleFunc("POST /api/settings", requireAuth(settings.handleSet))
 	mux.HandleFunc("/api/auth/me/profile/password", auth.handlePasswordChange) // POST
 
 	// Serve the SPA (if configured) at /frontend/* before the /api/* mux, so

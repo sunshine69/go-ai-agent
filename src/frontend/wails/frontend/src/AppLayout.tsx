@@ -2,6 +2,11 @@ import React, { useState, useEffect, useRef } from "react";
 import "./style.css";
 import { Markdown } from "./components/Markdown";
 import { useApi } from "./hooks/useApi";
+import { getSettings, setSetting } from "./utils/settings";
+
+// Same-origin base for /api/* calls (empty string serves in production
+// through Wails; set VITE_BACKEND_URL only for standalone dev via env).
+const API_BASE = (import.meta.env.VITE_BACKEND_URL as string) || "";
 
 // Types matching backend API response shape
 interface SubCategory {
@@ -72,6 +77,12 @@ export default function App() {
     loadDomains();
   }, []);
 
+  // --- Fetch settings on mount (mirrors SPA mount effect) ---
+  useEffect(() => {
+    getSettings(API_BASE)
+      .then(setSettingsState)
+      .catch(() => undefined);
+  }, []);
   // --- Fetch conversations on mount (mirrors SPA mount effect) ---
   useEffect(() => {
     refreshConversations();
@@ -246,8 +257,96 @@ export default function App() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (inputValue.trim() && !streaming.isStreaming) {
-      handleSend(inputValue.trim());
+      const text = inputValue.trim();
+
+      // Intercept slash-commands before they ever reach the model. The backend
+      // treats "/ctx ..." as a real message unless the frontend consumes it
+      // here, which would leak the raw command to the LLM.
+      if (text.startsWith("/")) {
+        handleSlashCommand(text);
+        setInputValue("");
+        return;
+      }
+
+      handleSend(text);
     }
+  };
+
+  // Handles a slash-command typed in the input. Supported:
+  //   /ctx [number]  set (with an argument) or report the per-user context limit
+  //   /clear         start a fresh conversation (clears messages + input)
+  //   /help          list the available commands
+  // Any other /command is ignored (left as a no-op).
+  const handleSlashCommand = (command: string) => {
+    const parts = command.split(/\s+/).filter(Boolean);
+    const name = parts[0];
+    const arg = parts.slice(1).join(" ");
+
+    switch (name) {
+      case "/clear":
+        handleClearAllConversations();
+        break;
+      case "/ctx":
+        if (arg === "") {
+          flashSettings(
+            "ok",
+            `Context limit: ${fmt(settings?.context_limit ?? 50000)} tokens`
+          );
+        } else {
+          void applyContextLimit(arg);
+        }
+        break;
+      case "/help":
+        flashSettings("ok", "Available commands: /ctx [number], /clear, /help");
+        break;
+      default:
+        // Unknown command — ignore silently.
+        break;
+    }
+  };
+
+  // Formats a token budget as a human-readable string.
+  const fmt = (n: number): string =>
+    Number.isFinite(n) ? n.toLocaleString() : "0";
+
+  const [settings, setSettingsState] = useState<{ context_limit: number } | null>(
+    null
+  );
+
+  const [settingsMessage, setSettingsMessage] = useState<{
+    type: "ok" | "error";
+    text: string;
+  } | null>(null);
+
+  const applyContextLimit = async (value: string) => {
+    if (!/^\d+$/.test(value)) {
+      flashSettings("error", "Please enter a whole number greater than 0.");
+      return;
+    }
+    const n = Number(value);
+    if (n < 1) {
+      flashSettings("error", "Please enter a whole number greater than 0.");
+      return;
+    }
+    try {
+      const updated = await setSetting(API_BASE, { key: "ctxLimit", value });
+      setSettingsState(updated);
+      flashSettings("ok", `Context limit set to ${updated.context_limit} tokens.`);
+    } catch {
+      flashSettings("error", "Failed to set context limit. Please try again.");
+    }
+  };
+
+  const flashSettings = (
+    type: "ok" | "error",
+    text: string
+  ) => {
+    setSettingsMessage({ type, text });
+    // Auto-dismiss after 4s.
+    window.setTimeout(() =>
+      setSettingsMessage((prev) => (prev?.text === text ? null : prev)),
+      4000
+    );
   };
 
   // Determine placeholder and scope label (mirrors the SPA logic).
@@ -399,6 +498,16 @@ export default function App() {
                 </button>
               )}
             </form>
+            {settingsMessage && (
+              <div
+                className={`settings-message ${
+                  settingsMessage.type === "ok" ? "ok" : "error"
+                }`}
+                role="status"
+              >
+                {settingsMessage.text}
+              </div>
+            )}
           </div>
         </div>
       </main>

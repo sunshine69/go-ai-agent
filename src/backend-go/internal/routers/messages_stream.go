@@ -12,6 +12,7 @@ import (
 	"time"
 
 	ctxpkg "github.com/stevek/go-ai-agent/backend-go/internal/context"
+	"github.com/stevek/go-ai-agent/backend-go/internal/contextcompress"
 	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
 )
@@ -211,16 +212,29 @@ sysPrompt := systemPrompt()
 	}
 
 	// Build messages array including history from the resolved conversation
-	history := []llm.ChatMessage{}
+	history := []db.DBMessage{}
 	for _, m := range conv.Messages {
-		history = append(history, llm.ChatMessage{
-			Role:    m.Role,
-			Content: m.Content,
+		history = append(history, m)
+	}
+
+	// Compress the history if it exceeds the token budget. The streaming
+	// handler works in llm.ChatMessage form, so we build a []db.DBMessage
+	// first (so contextcompress.TrimContext can estimate and summarise
+	// tokens), then re-map. No-op when compression is disabled
+	// (cfg.ContextLimit == 0) or the burst limit is not reached.
+	// Apply the caller's per-user context budget (via /ctx) before trimming.
+	cfg := m.h.applyUserCtxLimit(m.h.Cfg, r)
+	history = contextcompress.TrimContext(r.Context(), cfg, history)
+	historyCM := make([]llm.ChatMessage, 0, len(history))
+	for _, h := range history {
+		historyCM = append(historyCM, llm.ChatMessage{
+			Role:    h.Role,
+			Content: h.Content,
 		})
 	}
 
 	msgs := []llm.ChatMessage{{Role: "system", Content: sysPrompt}}
-	for _, h := range history {
+	for _, h := range historyCM {
 		if (h.Role == "user" || h.Role == "assistant") && h.Content != "" {
 			msgs = append(msgs, h)
 		}
@@ -397,16 +411,29 @@ sysPrompt := systemPrompt()
 	}
 
 	// Build messages array including history from the resolved conversation
-	history := []llm.ChatMessage{}
+	history := []db.DBMessage{}
 	for _, m := range conv.Messages {
-		history = append(history, llm.ChatMessage{
-			Role:    m.Role,
-			Content: m.Content,
+		history = append(history, m)
+	}
+
+	// Compress the history if it exceeds the token budget. The streaming
+	// handler works in llm.ChatMessage form, so we build a []db.DBMessage
+	// first (so contextcompress.TrimContext can estimate and summarise
+	// tokens), then re-map. No-op when compression is disabled
+	// (cfg.ContextLimit == 0) or the burst limit is not reached.
+	// Apply the caller's per-user context budget (via /ctx) before trimming.
+	cfg := m.h.applyUserCtxLimit(m.h.Cfg, r)
+	history = contextcompress.TrimContext(r.Context(), cfg, history)
+	historyCM := make([]llm.ChatMessage, 0, len(history))
+	for _, h := range history {
+		historyCM = append(historyCM, llm.ChatMessage{
+			Role:    h.Role,
+			Content: h.Content,
 		})
 	}
 
 	msgs := []llm.ChatMessage{{Role: "system", Content: sysPrompt}}
-	for _, h := range history {
+	for _, h := range historyCM {
 		if (h.Role == "user" || h.Role == "assistant") && h.Content != "" {
 			msgs = append(msgs, h)
 		}

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/stevek/go-ai-agent/backend-go/internal/context"
+	"github.com/stevek/go-ai-agent/backend-go/internal/contextcompress"
 	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
 )
@@ -98,6 +99,15 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		history = append(history, turn)
 	}
+
+	// --- Compress the prior-turn history if it exceeds the token budget ----
+	// No-op when compression is disabled (cfg.ContextLimit == 0) or the burst
+	// limit is not reached. Delegates to a single one-shot Answer() call for the
+	// AI summary (falls back to a deterministic structured summary on
+	// failure/timeout), mirroring the reference go-ai-chat CLI.
+	// Apply the caller's per-user context budget (via /ctx) before trimming.
+	cfg := m.h.applyUserCtxLimit(m.h.Cfg, r)
+	history = contextcompress.TrimContext(r.Context(), cfg, history)
 
 	// --- Gather context from MCP + RAG -------------------------------------
 	builder := context.New(m.h.Cfg, m.h.Manager, m.h.Rag)

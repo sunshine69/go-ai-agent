@@ -600,6 +600,23 @@ html, body {
 }
 
 /* Error message */
+/* Per-user settings flash messages (from /ctx) */
+.settings-message {
+  margin: 0 20px 8px 20px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+.settings-message.ok {
+  background: #064e3b;
+  color: #a7f3d0;
+  border: 1px solid #10b981;
+}
+.settings-message.error {
+  background: #450a0a;
+  color: #fca5a5;
+  border: 1px solid #ef4444;
+}
 .error-message {
   margin-top: 8px;
   padding: 8px 12px;

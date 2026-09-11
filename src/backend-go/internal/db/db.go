@@ -30,6 +30,7 @@ type DB struct {
 
 	Users       *UserRepo
 	Conversations *ConversationRepo
+	Settings      *SettingsRepo
 	driverName string
 
 	once sync.Once
@@ -64,6 +65,7 @@ func Open(path, driverName string) (*DB, error) {
 	d := &DB{db: database}
 	d.Users = newUserRepo(d)
 	d.Conversations = newConversationRepo(d)
+	d.Settings = newSettingsRepo(d)
 	d.driverName = driverName
 
 	if err := d.migrate(); err != nil {
@@ -82,47 +84,55 @@ func Open(path, driverName string) (*DB, error) {
 // NOT EXISTS) so it is safe to run on every process start.
 func (d *DB) migrate() error {
 	const schema = `
-CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    login_name    TEXT NOT NULL UNIQUE,
-    email         TEXT NOT NULL DEFAULT '',
-    password_hash TEXT NOT NULL,
-    is_admin      INTEGER NOT NULL DEFAULT 0,
-    created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    last_login    TEXT
-);
+    CREATE TABLE IF NOT EXISTS users (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        login_name    TEXT NOT NULL UNIQUE,
+        email         TEXT NOT NULL DEFAULT '',
+        password_hash TEXT NOT NULL,
+        is_admin      INTEGER NOT NULL DEFAULT 0,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        last_login    TEXT
+    );
 
-CREATE TABLE IF NOT EXISTS users_token (
-    user_id    INTEGER NOT NULL,
-    token      TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (user_id, token)
-);
+    CREATE TABLE IF NOT EXISTS users_token (
+        user_id    INTEGER NOT NULL,
+        token      TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (user_id, token)
+    );
 
-CREATE TABLE IF NOT EXISTS conversations (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL,
-    title       TEXT NOT NULL DEFAULT 'Untitled',
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
+    CREATE TABLE IF NOT EXISTS user_settings (
+        user_id INTEGER NOT NULL,
+        key     TEXT NOT NULL,
+        value   TEXT NOT NULL,
+        PRIMARY KEY (user_id, key)
+    );
 
-CREATE TABLE IF NOT EXISTS messages (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id INTEGER NOT NULL,
-    tool_calls    TEXT NOT NULL DEFAULT '[]',
-    tool_call_id  TEXT NOT NULL DEFAULT '',
-    role           TEXT NOT NULL,
-    content        TEXT NOT NULL,
-    key            TEXT NOT NULL DEFAULT '',
-    sources        TEXT NOT NULL DEFAULT '[]',
-    confluence     TEXT NOT NULL DEFAULT '[]',
-    created_at     TEXT NOT NULL DEFAULT (datetime('now'))
-);
+    CREATE INDEX IF NOT EXISTS idx_user_settings_user ON user_settings(user_id);
 
-CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);
-CREATE INDEX IF NOT EXISTS idx_messages_conv      ON messages(conversation_id);
-`
+    CREATE TABLE IF NOT EXISTS conversations (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL,
+        title       TEXT NOT NULL DEFAULT 'Untitled',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id INTEGER NOT NULL,
+        tool_calls      TEXT NOT NULL DEFAULT '[]',
+        tool_call_id    TEXT NOT NULL DEFAULT '',
+        role            TEXT NOT NULL,
+        content         TEXT NOT NULL,
+        key             TEXT NOT NULL DEFAULT '',
+        sources         TEXT NOT NULL DEFAULT '[]',
+        confluence      TEXT NOT NULL DEFAULT '[]',
+        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_conv      ON messages(conversation_id);`
 	if _, err := d.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate: %w", err)
 	}

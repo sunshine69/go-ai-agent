@@ -32,20 +32,46 @@ type Config struct {
 	// which also accepts an integer number of seconds). Default: 45m.
 	LLMTimeout time.Duration
 
+	// Context compression. These fields are ports of the reference go-ai-chat
+	// CLI's context-trimming knobs (see ../go-ai-chat/chat/ai-context.go).
+	//
+	// ContextLimit caps the estimated token count of a conversation before its
+	// history is compressed. A value of 0 disables context compression entirely.
+	// It is also the baseline for the burst limit below.
+	ContextLimit int
+	// CtxOverSizeAllowed is the per-turn burst budget: within a single user turn
+	// the context may temporarily exceed this number of tokens, letting the model
+	// gather full information across multiple tool rounds. When unset (0) it
+	// defaults to 2 * ContextLimit. It must be greater than ContextLimit to be
+	// useful.
+	CtxOverSizeAllowed int
+	// SummaryModel overrides the model used for context summarisation. When
+	// empty, the main LLMModel is used.
+	SummaryModel string
+	// SummaryModelUrl overrides the endpoint used for the summariser model. When
+	// empty, the global LLM_BASE_URL is used.
+	SummaryModelUrl string
+	// SummaryModelTimeout bounds the summariser sub-call. Accepts a Go duration
+	// string (e.g. "120s") or a plain integer number of seconds. Defaults to 1m.
+	SummaryModelTimeout string
+	// ShowThinking toggles emission of the model's thinking/reasoning text into
+	// the persisted assistant content.
+	ShowThinking bool
+
 	// MCP (stdio subprocess to the structured-data search server)
 	MCPEnabled    bool
 	MCPServerPath string
 	MCPWorkDir    string
 	// MCP_TOOL_EXEC_CMD: a command template executed verbatim to launch a stdio
-	//   MCP server. Tokens ${tool}, ${args}, ${workdir} are substituted. Takes
-	//   precedence over MCP_SERVER_PATH. Optional.
+	// MCP server. Tokens ${tool}, ${args}, ${workdir} are substituted. Takes
+	// precedence over MCP_SERVER_PATH. Optional.
 	MCPToolExecCmd string
 	// MCP_ENDPOINT: a streamable-HTTP MCP endpoint (http://host:port/mcp) to
-	//   connect to. If set, it takes precedence over MCP_TOOL_EXEC_CMD and
-	//   MCP_SERVER_PATH (the app connects via Streamable HTTP). Optional.
+	// connect to. If set, it takes precedence over MCP_TOOL_EXEC_CMD and
+	// MCP_SERVER_PATH (the app connects via Streamable HTTP). Optional.
 	MCPServerURL string
 	// MCP_BLOCK_LIST: comma-separated list of tool-name filters (regex or plain
-	//   substring) the model may NOT call. Optional. Default empty = no blocks.
+	// substring) the model may NOT call. Optional. Default empty = no blocks.
 	MCPBlockList string
 
 	// Confluence
@@ -180,6 +206,18 @@ func Load(envDotPath string) *Config {
 		LLMTemperature:    envFloat("LLM_TEMPERATURE", 0.1),
 		LLMTimeout:        timeoutDuration("LLM_TIMEOUT", 45*time.Minute),
 		LLMBackend:        envKey("LLM_BACKEND", ""), // "", "llama_cpp", or "ollama"
+
+		// Context compression defaults. These are env-driven to mirror the
+		// reference app's config knobs; they all default to disabled so the
+		// Go backend's default behaviour is unchanged until an operator turns
+		// the feature on.
+		ContextLimit:         envInt("CONTEXT_LIMIT", 0),
+		CtxOverSizeAllowed:   envInt("CTX_OVER_SIZE_ALLOWED", 0),
+		SummaryModel:         envKey("SUMMARY_MODEL", ""),
+		SummaryModelUrl:      envKey("SUMMARY_MODEL_URL", ""),
+		SummaryModelTimeout:  envKey("SUMMARY_MODEL_TIMEOUT", "60s"),
+		ShowThinking:         envBool("SHOW_THINKING", false),
+
 		MCPEnabled:        envBool("MCP_ENABLED", true),
 		MCPServerPath:     envKey("MCP_SERVER_PATH", "geniq-mcp-server"),
 		MCPToolExecCmd:    envKey("MCP_TOOL_EXEC_CMD", ""),
@@ -194,7 +232,6 @@ func Load(envDotPath string) *Config {
 		RAGScoreThreshold: envFloat("RAG_SCORE_THRESHOLD", 0.25),
 		RAGDBPath:         envKey("RAG_DB_PATH", filepath.Join(wd, ".geniq_rag.db")),
 		RAGEmbeddingModel: envKey("RAG_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
-		EmbeddingAPIKey:   envKey("EMBEDDING_API_KEY", envKey("LLM_API_KEY", "sk-placeholder")),
 	}
 	// DB: application datastore (users, conversations, messages). SQLite is the
 	// default driver; pass a registered driver name for PostgreSQL.

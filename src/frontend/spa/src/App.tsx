@@ -7,7 +7,7 @@ import { DomainPills } from "./components/DomainPill";
 import { SubCategoryPills } from "./components/SubCategoryPill";
 import { ChatArea } from "./components/ChatArea";
 import { Login } from "./components/Login";
-import { AuthError, fetchWithToken, deleteJSON } from "./utils/api";
+import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings } from "./utils/api";
 
 // Base URL for the AI backend — read from .env file
 const API_BASE =
@@ -85,6 +85,14 @@ export default function App() {
       resetStreaming();
     }
   }, [showAuthedUI, initialized]);
+
+  // Load the current per-user context limit once we're authed.
+  useEffect(() => {
+    if (!showAuthedUI) return;
+    getSettings(API_BASE)
+      .then(setSettingsState)
+      .catch(() => undefined);
+  }, [showAuthedUI]);
 
   // --- Streaming hook ---
   const {
@@ -319,6 +327,18 @@ export default function App() {
     } catch {}
   };
 
+  // Clears the active conversation (used by the /clear command and Settings
+  // panel): drops the current conversation, wipes messages and input, and
+  // starts on a blank screen.
+  const onClearConversation = () => {
+    // Clear only the on-screen messages + input. Intentionally does NOT change
+    // the conversation ID: the backend keeps serving the same conversation's
+    // (and hence the same AI) context. A genuinely new conversation is created
+    // via the + button, not via /clear.
+    setMessages([]);
+    setInputValue("");
+  };
+
   const refreshConversations = async () => {
     try {
       const res = await fetchWithToken(API_BASE, {
@@ -382,9 +402,112 @@ export default function App() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (inputValue.trim() && !streamingState.isStreaming) {
-      handleSend(inputValue.trim());
+    const text = inputValue.trim();
+    if (!text || streamingState.isStreaming) return;
+
+    // Intercept slash-commands before they ever reach the model. The backend
+    // treats "/ctx ..." as a real message unless the frontend consumes it here,
+    // which would leak the raw command to the LLM.
+    if (text.startsWith("/")) {
+      handleSlashCommand(text);
+      setInputValue("");
+      return;
     }
+
+    handleSend(text);
+  };
+
+  // Handles a slash-command typed in the input. Supported:
+  //   /ctx [number]  set (with an argument) or report the per-user context limit
+  //   /clear         start a fresh conversation (clears messages + input)
+  // Any other /command is ignored (left as a no-op, like the SPA's behaviour).
+  const handleSlashCommand = (command: string) => {
+    const parts = command.split(/\s+/).filter(Boolean);
+    const name = parts[0];
+    const arg = parts.slice(1).join(" ");
+
+    switch (name) {
+      case "/clear":
+        onClearConversation();
+        break;
+      case "/ctx":
+        if (arg === "") {
+          appendFeedback(
+            "ok",
+            `Context limit: ${fmt(settings?.context_limit ?? 50000)} tokens`
+          );
+        } else {
+          void applyContextLimit(arg);
+        }
+        break;
+      case "/help":
+        appendFeedback("ok", COMMAND_HELP_TEXT);
+        break;
+      default:
+        appendFeedback(
+          "error",
+          `Unknown command: /${name}. Type /help for a list of commands.`
+        );
+        break;
+    }
+  };
+
+  // Formats a token budget as a human-readable string.
+  const fmt = (n: number): string =>
+    Number.isFinite(n) ? n.toLocaleString() : "0";
+
+  // The text rendered by the /help command — a short catalog of every
+  // supported slash command with a note on its arguments. Kept as a constant so
+  // both /help and its tests can share the exact wording.
+  const COMMAND_HELP_TEXT =
+    "Available commands:\n" +
+    "  /clear    Clear the conversation.\n" +
+    "  /ctx [N]  Show or set the context limit (tokens). If N is omitted, " +
+    "prints the current limit.\n" +
+    "  /help     Show this help message.";
+
+  const [settings, setSettingsState] = useState<{ context_limit: number } | null>(
+    null
+  );
+
+
+
+  const applyContextLimit = async (value: string) => {
+    if (!/^\d+$/.test(value)) {
+      appendFeedback("error", "Please enter a whole number greater than 0.");
+      return;
+    }
+    const n = Number(value);
+    if (n < 1) {
+      appendFeedback("error", "Please enter a whole number greater than 0.");
+      return;
+    }
+    try {
+      const updated = await setSetting(API_BASE, { key: "ctxLimit", value });
+      setSettingsState(updated);
+      appendFeedback("ok", `Context limit set to ${updated.context_limit} tokens.`);
+    } catch {
+      appendFeedback("error", "Failed to set context limit. Please try again.");
+    }
+  };
+
+  // The /ctx (and /clear) command feedback is shown as a retained message in
+  // the main chat window rather than a toast that auto-dismisses after 4s. This
+  // lets the user scroll up, copy the value, and see the result persist across
+  // the session. The message is appended as an assistant message tagged with
+  // `error: "command_result"` so MessageBubble renders it in a distinct style.
+  const appendFeedback = (
+    type: "ok" | "error",
+    text: string
+  ) => {
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "assistant",
+        content: text,
+        error: `command_result:${type}`,
+      },
+    ]);
   };
 
   const handleStop = () => {
@@ -464,6 +587,7 @@ export default function App() {
         domains={domains}
         user={user}
         onLogout={() => void logout()}
+        onClearConversation={onClearConversation}
       />
 
       {/* Main content */}

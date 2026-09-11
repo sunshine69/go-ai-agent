@@ -83,9 +83,18 @@ func run(args []string) error {
 	}
 
 	var (
+		envDotPath = ""
+		outDir     = ""
+
+		cfg               = config.Load(envDotPath)
+		model             = flag.String("model", cfg.RAGEmbeddingModel, "embeding model name")
+		openAIUrl         = flag.String("url", cfg.EmbeddingBaseURL, "OpenAI URL Base")
+		apiKey            = flag.String("apikey", cfg.EmbeddingAPIKey, "Api Key")
+		embedingDimension = flag.Int("dim", cfg.EmbeddingDim, "Embeding dimention (int)")
+
 		modeFlag = flag.String("mode", "incremental", "indexing mode: full|incremental|reset|dry-run")
 		outFlag  = flag.String("out", "", "output directory for the RAG db (overrides RAG_DB_PATH from .env)")
-		docsFlag = flag.String("docs", "", "directory of RAG documents to scan for indexing (overrides RAG_DOCS_DIR env var / default <cwd>/resources/rag_documents)")
+		docsFlag = flag.String("in", "", "directory of RAG documents to scan for indexing (overrides RAG_DOCS_DIR env var / default <cwd>/resources/rag_documents)")
 		catFlag  = flag.String("category", "", "only index this category directory")
 		srch     = flag.String("search", "", "vector-search the store instead of indexing; prints top matches")
 		limitFlg = flag.Int("limit", 5, "max results for -search")
@@ -97,8 +106,6 @@ func run(args []string) error {
 	}
 
 	// Positional args: .env path (first), out dir (second).
-	envDotPath := ""
-	outDir := ""
 	for _, p := range positional {
 		if p == "" {
 			continue
@@ -118,8 +125,6 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown mode %q (want full|incremental|reset|dry-run)", mode)
 	}
-
-	cfg := config.Load(envDotPath)
 
 	// -docs overrides the docs directory (RAG_DOCS_DIR / default <cwd>/resources/
 	// rag_documents), so the CLI is usable without editing the .env.
@@ -150,10 +155,10 @@ func run(args []string) error {
 		mode, cfg.RAGDocsDir, cfg.RAGDBPath, cfg.EmbeddingDim, *verbose, *forceLog)
 
 	embedder := embeddings.New(embeddings.Config{
-		BaseURL: cfg.EmbeddingBaseURL,
-		APIKey:  cfg.EmbeddingAPIKey,
-		Model:   cfg.RAGEmbeddingModel,
-	}, cfg.EmbeddingDim)
+		BaseURL: *openAIUrl,
+		APIKey:  *apiKey,
+		Model:   *model,
+	}, *embedingDimension)
 
 	store, err := ragstore.New(ragstore.ConfigFromConfigMap(cfg), embedder)
 	if err != nil {
