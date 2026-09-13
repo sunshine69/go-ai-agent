@@ -1,7 +1,7 @@
 {
-  "name": "SupersonicIQ - Sonic Healthcare Knowledge Assistant",
+  "name": "SupersonicIQ - Knowledge Assistant",
   "short_name": "SupersonicIQ",
-  "description": "AI-Powered Knowledge Assistant for Sonic Healthcare",
+  "description": "AI-Powered Knowledge Assistant",
   "start_url": "/",
   "display": "window",
   "background_color": "#ffffff",
