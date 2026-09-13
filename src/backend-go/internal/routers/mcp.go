@@ -143,7 +143,15 @@ func (m *mcpHandler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "spec is required for connect")
 			return
 		}
-		manager, err := mcpclient.Connect(req.Spec, m.managerBlockList(), req.WorkDir)
+		// Prefer an explicit workdir from the request; otherwise honour the
+		// caller's stored /mcpdir setting so a later /mcp uses that directory.
+		workdir := req.WorkDir
+		if strings.TrimSpace(workdir) == "" {
+			if wd, ok := mcpclient.DefaultMCPWorkdir(m.h.DB, uid); ok {
+				workdir = wd
+			}
+		}
+		manager, err := mcpclient.Connect(req.Spec, m.managerBlockList(), workdir)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "failed to connect MCP: "+err.Error())
 			return
