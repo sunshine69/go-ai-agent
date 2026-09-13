@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,29 +25,18 @@ import (
 
 func main() {
 	envDotPath := ""
-	if len(os.Args) > 1 {
-		envDotPath = os.Args[1]
-	}
+	frontendArg := ""
+
+	flag.StringVar(&envDotPath, "envfile", "", "Dotenv file for config")
+	flag.StringVar(&frontendArg, "ui-path", "", "Path to teh SPA app for the frontend")
+	flag.Parse()
 
 	println("[DEBUG] envDotPAth: " + envDotPath)
-
-	// Resolve the SPA serving path: the optional second CLI argument
-	// (os.Args[1] is the .env path), falling back to the FRONTEND_PATH env var.
-	// Passing "" lets serving.New use FRONTEND_PATH, which is then resolved
-	// relative to the current working directory.
-	frontendArg := ""
-	if len(os.Args) > 2 {
-		frontendArg = os.Args[2]
-	}
-
-	// Load the .env FIRST. config.Load injects FRONTEND_PATH (and every other
-	// config key) into the process environment. serving.New reads FRONTEND_PATH
-	// from os.Getenv, so it must run AFTER config.Load — otherwise the .env
-	// value is invisible to it (which is exactly why .env previously seemed
-	// "ignored" while env=FRONTEND_PATH=... worked: a real process env var is
-	// present before any Go code runs).
 	cfg := config.Load(envDotPath)
 
+	if frontendArg == "" {
+		frontendArg = os.Getenv("FRONTEND_PATH")
+	}
 	frontend := serving.New(frontendArg)
 	frontendEnabled := frontend.Enabled()
 	if frontendEnabled {
