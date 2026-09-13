@@ -327,14 +327,21 @@ export default function App() {
   };
 
   const handleConversationDelete = async (id: string) => {
+    // A single delete can still 404 here even when the item was already
+    // removed: the multi-delete path (Sidebar.handleMultiDelete) bulk-deletes
+    // the selected ids and then calls onDeleteConversation(id) for each, so
+    // the follow-up DELETE to /api/conversations/{id} returns 404. That 404 is
+    // the desired end-state (gone on the server), so ignore it and always run
+    // refreshConversations() below so the list drops the deleted entries.
     try {
       await deleteJSON(API_BASE, `/api/conversations/${id}`);
       if (id === currentConversationId) {
         setCurrentConversationId("");
         setMessages([]);
       }
-      refreshConversations();
-    } catch {}
+    } catch {
+    }
+    refreshConversations();
   };
 
   const handleClearAllConversations = async () => {
