@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
 )
 
 // authUserView is the public user shape returned to clients (no password hash).

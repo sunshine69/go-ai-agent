@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	ctxpkg "github.com/stevek/go-ai-agent/backend-go/internal/context"
-	"github.com/stevek/go-ai-agent/backend-go/internal/contextcompress"
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
-	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
+	ctxpkg "github.com/sunshine69/go-ai-agent/backend-go/internal/context"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/contextcompress"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/llm"
 )
 
 // messageStreamHandler exposes POST /api/messages/stream and proxyLLMStream,
@@ -184,7 +184,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	}
 
 	// Prepare system prompt
-sysPrompt := systemPrompt()
+	sysPrompt := systemPrompt()
 	// Prepare final message with context injection
 	var userMsg string
 	if strings.TrimSpace(contextText) != "" {
@@ -398,7 +398,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	}
 
 	// Prepare system prompt (same as in handleStreamChat)
-sysPrompt := systemPrompt()
+	sysPrompt := systemPrompt()
 
 	// Prepare final message with context injection
 	var userMsg string

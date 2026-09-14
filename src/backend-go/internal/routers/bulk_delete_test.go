@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/config"
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/config"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
 )
 
 // TestBulkDeleteConversationsRouteRegistered verifies the SPA multi-select

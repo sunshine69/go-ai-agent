@@ -3,8 +3,9 @@ package mcpclient
 import (
 	"strings"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
 	"sync"
+
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
 )
 
 // MCPManager resolves which ResilientMCPClient serves a given user, plus a

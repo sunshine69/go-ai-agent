@@ -19,12 +19,12 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/config"
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
-	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
-	"github.com/stevek/go-ai-agent/backend-go/internal/mcpclient"
-	"github.com/stevek/go-ai-agent/backend-go/internal/ragstore"
-	"github.com/stevek/go-ai-agent/backend-go/internal/serving"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/config"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/llm"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/mcpclient"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragstore"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/serving"
 )
 
 // Handlers bundles the dependencies shared by all handlers. It is passed through

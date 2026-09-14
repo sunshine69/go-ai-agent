@@ -31,10 +31,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/config"
-	"github.com/stevek/go-ai-agent/backend-go/internal/embeddings"
-	"github.com/stevek/go-ai-agent/backend-go/internal/ragindex"
-	"github.com/stevek/go-ai-agent/backend-go/internal/ragstore"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/config"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/embeddings"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragindex"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragstore"
 )
 
 func main() {

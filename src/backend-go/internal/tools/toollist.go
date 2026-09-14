@@ -10,7 +10,7 @@ package tools
 import (
 	"fmt"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/mcpclient"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/mcpclient"
 )
 
 // Provider lists the MCP tools available to the model as OpenAI-compatible

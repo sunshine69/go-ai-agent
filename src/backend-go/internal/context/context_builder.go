@@ -7,10 +7,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/config"
-	"github.com/stevek/go-ai-agent/backend-go/internal/domainconfig"
-	"github.com/stevek/go-ai-agent/backend-go/internal/mcpclient"
-	"github.com/stevek/go-ai-agent/backend-go/internal/ragstore"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/config"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/domainconfig"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/mcpclient"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragstore"
 )
 
 // ContextBuilder is a port of src/backend/app/context_builder.py::ContextBuilder.

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/domainconfig"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/domainconfig"
 )
 
 // domainJSON is the serialized shape the Wails frontend reads for /api/domains.

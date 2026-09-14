@@ -27,9 +27,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/config"
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
-	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/config"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/llm"
 )
 
 // keepHead / keepTail bound the turns that are always preserved verbatim:

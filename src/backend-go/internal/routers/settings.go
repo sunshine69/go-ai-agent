@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
 )
 
 // defaultCtxLimit is the effective context token default when a user has never
@@ -153,4 +153,3 @@ func (h *settingsHandler) handleSet(w http.ResponseWriter, r *http.Request) {
 		ContextLimit: ctxLimit,
 	})
 }
-

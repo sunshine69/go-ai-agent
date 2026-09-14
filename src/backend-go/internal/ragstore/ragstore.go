@@ -38,7 +38,7 @@ import (
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/config"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/config"
 )
 
 // sqlite_vec.Auto() registers a ConnectHook on the driver; it must run

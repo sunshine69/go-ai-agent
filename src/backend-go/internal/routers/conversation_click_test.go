@@ -7,18 +7,18 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/config"
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/config"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
 )
 
 // TestConversationClickBlankOnEndToEnd reproduces the exact client flow
 // described in the bug report:
 //
-//	1. login -> obtain a token for user 1
-//	2. create a conversation (server assigns numeric id)
-//	3. POST /api/messages to persist a user+assistant turn in that conversation
-//	4. GET /api/conversations/{id} (what the SPA's handleConversationSelect
-//	   calls on click)
+//  1. login -> obtain a token for user 1
+//  2. create a conversation (server assigns numeric id)
+//  3. POST /api/messages to persist a user+assistant turn in that conversation
+//  4. GET /api/conversations/{id} (what the SPA's handleConversationSelect
+//     calls on click)
 //
 // The bug: clicking a conversation in the sidebar yields a blank chat because
 // the GET-by-id response has no messages (or no rows at all).

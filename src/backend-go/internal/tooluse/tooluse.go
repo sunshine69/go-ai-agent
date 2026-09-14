@@ -22,8 +22,8 @@ import (
 	"log"
 	"strings"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
-	"github.com/stevek/go-ai-agent/backend-go/internal/tools"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/llm"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/tools"
 )
 
 // ToolUse is the orchestrator that lets the model call MCP tools.
@@ -80,13 +80,13 @@ func (t *ToolUse) Run(ctx context.Context, messages []llm.ChatMessage, sink func
 
 	for turn := 0; turn < t.maxCalls; turn++ {
 		reqBody := llm.CompletionRequest{
-			Model:    t.llmClient.Model(),
+			Model: t.llmClient.Model(),
 			// Surface the configured sampling temperature (mirrors
 			// Answer/AnswerStream). Without this a nil Temperature is omitted
 			// from the JSON body and the server falls back to its own default
 			// (often 0 -> terse, no personality).
 			Temperature: t.llmClient.Temperature(),
-			Messages: append([]llm.ChatMessage{}, messages...),
+			Messages:    append([]llm.ChatMessage{}, messages...),
 		}
 		if useTools {
 			reqBody.Tools = t.provider.Available()

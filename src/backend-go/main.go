@@ -13,14 +13,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/config"
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
-	"github.com/stevek/go-ai-agent/backend-go/internal/embeddings"
-	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
-	"github.com/stevek/go-ai-agent/backend-go/internal/mcpclient"
-	"github.com/stevek/go-ai-agent/backend-go/internal/ragstore"
-	"github.com/stevek/go-ai-agent/backend-go/internal/routers"
-	"github.com/stevek/go-ai-agent/backend-go/internal/serving"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/config"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/embeddings"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/llm"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/mcpclient"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragstore"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/routers"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/serving"
 )
 
 func main() {

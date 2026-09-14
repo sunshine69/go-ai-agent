@@ -24,7 +24,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/ragstore"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragstore"
 )
 
 // Default chunking params, matching RAG_CHUNK_SIZE / RAG_CHUNK_OVERLAP in the
@@ -39,10 +39,10 @@ const (
 type Mode string
 
 const (
-	ModeFull       Mode = "full"
+	ModeFull        Mode = "full"
 	ModeIncremental Mode = "incremental"
-	ModeReset      Mode = "reset"
-	ModeDryRun     Mode = "dry-run"
+	ModeReset       Mode = "reset"
+	ModeDryRun      Mode = "dry-run"
 )
 
 // StateKey / indexState mirror the Python _index_state.json schema.
@@ -55,13 +55,13 @@ type indexState map[string]StateKey
 
 // Options configures the indexer.
 type Options struct {
-	DocsDir    string
-	ChunkSize  int
+	DocsDir      string
+	ChunkSize    int
 	ChunkOverlap int
-	Category   string // if set, only that category dir is walked
-	Mode       Mode
-	Verbose    bool
-	Force      bool // ignore state; re-index everything
+	Category     string // if set, only that category dir is walked
+	Mode         Mode
+	Verbose      bool
+	Force        bool // ignore state; re-index everything
 }
 
 // Indexer holds the loaded state and the target store.

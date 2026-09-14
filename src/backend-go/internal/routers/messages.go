@@ -4,10 +4,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/context"
-	"github.com/stevek/go-ai-agent/backend-go/internal/contextcompress"
-	"github.com/stevek/go-ai-agent/backend-go/internal/db"
-	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/context"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/contextcompress"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/llm"
 )
 
 // messageRequest mirrors the Python MessageRequest schema.

@@ -8,10 +8,10 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/config"
-	"github.com/stevek/go-ai-agent/backend-go/internal/llm"
-	"github.com/stevek/go-ai-agent/backend-go/internal/tools"
-	"github.com/stevek/go-ai-agent/backend-go/internal/tooluse"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/config"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/llm"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/tools"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/tooluse"
 )
 
 // newToolUseController builds a tool-use orchestrator from the handlers'

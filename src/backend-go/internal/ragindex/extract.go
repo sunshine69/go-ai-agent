@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	fitz "github.com/gen2brain/go-fitz"
-	"github.com/stevek/go-ai-agent/backend-go/internal/ragstore"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragstore"
 )
 
 // LoadFile reads text from a file based on its extension.

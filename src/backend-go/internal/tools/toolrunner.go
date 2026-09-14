@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/stevek/go-ai-agent/backend-go/internal/mcpclient"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/mcpclient"
 )
 
 // Runner executes a single MCP tool call through the live manager and
