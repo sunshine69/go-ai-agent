@@ -110,7 +110,10 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 	history = contextcompress.TrimContext(r.Context(), cfg, history)
 
 	// --- Gather context from MCP + RAG -------------------------------------
-	builder := context.New(m.h.Cfg, m.h.mcpClient(r), m.h.Rag)
+	// Resolve the per-user RAG store (or the shared default) so the context
+	// builder uses the correct vector index for this caller.
+	ragStore := m.h.ragManager.Client(currentUserIDOr(r, 0))
+	builder := context.New(m.h.Cfg, m.h.mcpClient(r), ragStore)
 	contextText, sources, confluenceRefs := builder.BuildContext(msg, req.Domain, req.SubCategory)
 
 	// Skip context when it is empty or purely errors so the LLM can answer

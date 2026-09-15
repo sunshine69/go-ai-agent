@@ -122,6 +122,29 @@ export async function setMCPWorkdir(
 ): Promise<MCPWorkdir> {
   return postJSON<MCPWorkdir>(apiBaseUrl, "/api/mcpdir", { value });
 }
+
+// RAGWorkdir is the client-side view of the per-user RAG working-directory
+// selector, matching the ragdirResponse returned by GET/POST /api/ragdir.
+export interface RAGWorkdir {
+  value: string;
+}
+
+/** Returns the caller's stored RAG working-directory selector. GET /api/ragdir.
+ * The value is a relative path with no ".." component (e.g. "rag_data"); empty
+ * when unset, meaning the RAG DB lives in the backend process cwd. */
+export async function getRAGWorkdir(apiBaseUrl: string): Promise<RAGWorkdir> {
+  return getJSON<RAGWorkdir>(apiBaseUrl, "/api/ragdir");
+}
+
+/** setRAGWorkdir stores (or, with an empty payload, clears) the caller's RAG
+ * working-directory selector. POST /api/ragdir. The /ragdir slash command uses
+ * this so the RAG store for that user picks up documents in this directory. */
+export async function setRAGWorkdir(
+  apiBaseUrl: string,
+  value: string
+): Promise<RAGWorkdir> {
+  return postJSON<RAGWorkdir>(apiBaseUrl, "/api/ragdir", { value });
+}
 /**
  * A fetch wrapper that attaches the bearer token and understands backend
  * auth-rejection semantics.

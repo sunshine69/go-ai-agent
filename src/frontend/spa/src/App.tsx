@@ -7,7 +7,7 @@ import { DomainPills } from "./components/DomainPill";
 import { SubCategoryPills } from "./components/SubCategoryPill";
 import { ChatArea } from "./components/ChatArea";
 import { Login } from "./components/Login";
-import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir } from "./utils/api";
+import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir, getRAGWorkdir, setRAGWorkdir } from "./utils/api";
 
 // Base URL for the AI backend — read from .env file
 const API_BASE =
@@ -110,6 +110,16 @@ export default function App() {
     if (!showAuthedUI) return;
     getMCPWorkdir(API_BASE)
       .then((w) => setMCPDirState(w.value))
+      .catch(() => undefined);
+  }, [showAuthedUI]);
+
+  // Load the stored RAG working-directory once we're authed, so /ragdir and
+  // a later message know the current value. /ragdir can refresh it on demand.
+  // Mirrors the MCP workdir effect above.
+  useEffect(() => {
+    if (!showAuthedUI) return;
+    getRAGWorkdir(API_BASE)
+      .then((w) => setRAGDirState(w.value))
       .catch(() => undefined);
   }, [showAuthedUI]);
 
@@ -475,6 +485,11 @@ export default function App() {
         // server; omit the arg to report the current value.
         void handleMCPDir(arg);
         break;
+      case "/ragdir":
+        // arg is the raw RAG directory value; omit the arg to report the
+        // current value. Stored per-user via POST /api/ragdir.
+        void handleRAGDir(arg);
+        break;
       case "/help":
         appendFeedback("ok", COMMAND_HELP_TEXT);
         break;
@@ -595,6 +610,32 @@ export default function App() {
       );
     }
   };
+
+  // Handles the /ragdir slash-command. Like the reference CLI's RAG_DIR knob,
+  // it points the RAG pipeline at a directory of documents to embed. It's
+  // stored per-user via POST /api/ragdir and used automatically by the backend
+  // when generating a store. Omit the argument to report the current value.
+  //
+  //   /ragdir [path]   set the RAG working-directory (empty resets it).
+  const handleRAGDir = async (value?: string) => {
+    const v = (value ?? "").trim();
+    try {
+      const updated = v === ""
+        ? await setRAGWorkdir(API_BASE, "")
+        : await setRAGWorkdir(API_BASE, v);
+      setRAGDirState(updated.value);
+      if (updated.value === "") {
+        appendFeedback("ok", "RAG working directory cleared.");
+      } else {
+        appendFeedback("ok", `RAG working directory set to: ${updated.value}`);
+      }
+    } catch (e) {
+      appendFeedback(
+        "error",
+        "Failed to set RAG working directory: " + (e instanceof Error ? e.message : String(e))
+      );
+    }
+  };
   // Formats a token budget as a human-readable string.
   const fmt = (n: number): string =>
     Number.isFinite(n) ? n.toLocaleString() : "0";
@@ -628,6 +669,13 @@ export default function App() {
   // Tracks the stored MCP working-directory so /mcpdir and a later /mcp know
   // the current value. Loaded once from GET /api/mcpdir; refreshed by /mcpdir.
   const [, setMCPDirState] = useState<string | null>(
+    null
+  );
+
+  // Tracks the stored RAG working-directory so /ragdir and a later message
+  // know the current value. Loaded once from GET /api/ragdir; refreshed by
+  // /ragdir.
+  const [, setRAGDirState] = useState<string | null>(
     null
   );
 

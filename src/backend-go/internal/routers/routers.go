@@ -23,6 +23,7 @@ import (
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/llm"
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/mcpclient"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragmanager"
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragstore"
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/serving"
 )
@@ -35,9 +36,15 @@ type Handlers struct {
 	// handler's own goroutine against the authenticated request.
 	mcp *mcpclient.MCPManager
 
+	// ragManager resolves the active RAG store per caller at request time.
+	// Each handler stores a copy of Handlers, so this pointer is read in the
+	// handler's own goroutine against the authenticated request.
+	ragManager *ragmanager.Manager
+
 	// LLM is the OpenAI-compatible client used by the messages handler.
 	LLM *llm.Client
-	// Rag is the vector store used by the messages handler.
+	// Rag is the vector store used by the messages handler (fallback when no
+	// per-user override is configured).
 	Rag *ragstore.RAGStore
 	// Config holds the resolved configuration for building the context builder.
 	Cfg *config.Config
@@ -54,14 +61,15 @@ type Handlers struct {
 // NewHandlers builds a Handlers with an MCP manager bound to a shared default
 // (possibly nil) client. It exists so callers outside the package (e.g. main) can
 // construct Handlers without touching the unexported mcp field.
-func NewHandlers(mcpManager *mcpclient.MCPManager, llmClient *llm.Client, rag *ragstore.RAGStore, cfg *config.Config, db *db.DB, frontend *serving.Server) Handlers {
+func NewHandlers(mcpManager *mcpclient.MCPManager, llmClient *llm.Client, rag *ragstore.RAGStore, ragManager *ragmanager.Manager, cfg *config.Config, db *db.DB, frontend *serving.Server) Handlers {
 	return Handlers{
-		mcp:      mcpManager,
-		LLM:      llmClient,
-		Rag:      rag,
-		Cfg:      cfg,
-		DB:       db,
-		Frontend: frontend,
+		mcp:        mcpManager,
+		ragManager: ragManager,
+		LLM:        llmClient,
+		Rag:        rag,
+		Cfg:        cfg,
+		DB:         db,
+		Frontend:   frontend,
 	}
 }
 
@@ -122,6 +130,7 @@ func (h Handlers) ServeMux() http.Handler {
 	auth := newAuthHandler(h.DB)
 	mcp := newMCPHandler(h)
 	mcpdir := newMCPdirHandler(h.DB)
+	ragdir := newRagdirHandler(h.DB, h.ragManager)
 	settings := newSettingsHandler(h.DB)
 
 	mux.HandleFunc("/api/domains", requireAuth(domains.handle))
@@ -155,6 +164,9 @@ func (h Handlers) ServeMux() http.Handler {
 
 	mux.HandleFunc("GET /api/mcpdir", requireAuth(mcpdir.handleList))
 	mux.HandleFunc("POST /api/mcpdir", requireAuth(mcpdir.handleSet))
+
+	mux.HandleFunc("GET /api/ragdir", requireAuth(ragdir.handleList))
+	mux.HandleFunc("POST /api/ragdir", requireAuth(ragdir.handleSet))
 	// Serve the SPA (if configured) at /frontend/* before the /api/* mux, so
 	// frontend requests are handled by the static file server rather than the
 	// child mux. Registered on the top-level mux only (not on `mux`, the /api

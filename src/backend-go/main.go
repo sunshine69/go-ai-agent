@@ -18,6 +18,7 @@ import (
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/embeddings"
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/llm"
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/mcpclient"
+	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragmanager"
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/ragstore"
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/routers"
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/serving"
@@ -128,10 +129,24 @@ func main() {
 		log.Println("RAG disabled")
 	}
 
+	// --- RAG manager (per-user ragDir) --------------------------------------
+	// Build a ragmanager over the shared default store. The manager holds a
+	// map of per-user custom RAG stores keyed by resolved absolute DB path.
+	ragMgr := ragmanager.NewManager(rag, embeddings.Config{
+		BaseURL: cfg.EmbeddingBaseURL,
+		APIKey:  cfg.EmbeddingAPIKey,
+		Model:   cfg.RAGEmbeddingModel,
+	}, cfg.EmbeddingDim)
+	// Rehydrate the in-memory uid→rawDir mapping from persisted settings so a
+	// /ragdir choice set before a server restart survives. Without this the
+	// fresh manager would forget the user's directory and silently fall back
+	// to the default RAG store (rag-db/rags.db).
+	ragMgr.LoadFromDB(d)
+
 	// --- Handlers ----------------------------------------------------------
 	// Build a per-user MCP manager over the shared default (possibly nil).
 	mgr := mcpclient.NewMCPManager(manager)
-	h := routers.NewHandlers(mgr, llmClient, rag, cfg, d, frontend)
+	h := routers.NewHandlers(mgr, llmClient, rag, ragMgr, cfg, d, frontend)
 
 	mux := h.ServeMux()
 

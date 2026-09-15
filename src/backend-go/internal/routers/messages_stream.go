@@ -169,7 +169,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		return
 	}
 	// Build context using ContextBuilder (MCP + RAG)
-	builder := ctxpkg.New(m.h.Cfg, m.h.mcpClient(r), m.h.Rag)
+	builder := ctxpkg.New(m.h.Cfg, m.h.mcpClient(r), m.h.ragManager.Client(currentUserIDOr(r, 0)))
 	contextText, sources, confluenceRefs := builder.BuildContext(msg, req.Domain, req.SubCategory)
 
 	confluenceBaseURL := strings.TrimSuffix(m.h.Cfg.ConfluenceBaseURL, "/")
@@ -383,7 +383,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 	// Build context using ContextBuilder (MCP + RAG)
-	builder := ctxpkg.New(m.h.Cfg, m.h.mcpClient(r), m.h.Rag)
+	builder := ctxpkg.New(m.h.Cfg, m.h.mcpClient(r), m.h.ragManager.Client(currentUserIDOr(r, 0)))
 	contextText, sources, confluenceRefs := builder.BuildContext(msg, req.Domain, req.SubCategory)
 
 	confluenceBaseURL := strings.TrimSuffix(m.h.Cfg.ConfluenceBaseURL, "/")

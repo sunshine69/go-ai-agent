@@ -27,10 +27,18 @@ import (
 // citations so the caller can surface them in the context/done SSE events,
 // mirroring the hybrid path.
 func augmentToolUseMessage(r *http.Request, h Handlers, query, domain, subCategory string) (string, []string, []confluenceLink) {
-	if h.Rag == nil || query == "" {
+	// Resolve the per-user RAG store (or the shared default) so the context
+	// builder uses the correct vector index for this caller — mirroring the
+	// hybrid path in messages.go. This is the key fix: previously we used
+	// h.Rag directly, which always pointed at the default store and silently
+	// ignored any /ragdir change the user made.
+	store := h.ragManager.Client(currentUserIDOr(r, 0))
+	fmt.Printf("[DEBUG RAGDIR] augmentToolUseMessage: resolving store for uid=%d => store=%v\n", currentUserIDOr(r, 0), store)
+	if store == nil || query == "" {
+		fmt.Printf("[DEBUG RAGDIR] augmentToolUseMessage: store nil or empty query=%q, returning early\n", query)
 		return query, nil, nil
 	}
-	builder := ctxbldg.New(h.Cfg, h.mcpClient(r), h.Rag)
+	builder := ctxbldg.New(h.Cfg, h.mcpClient(r), store)
 	contextText, sources, confluenceRefs := builder.BuildContext(query, domain, subCategory)
 	// Skip context when it is empty or purely error-based so the LLM can answer
 	// freely from its own knowledge + tools.
