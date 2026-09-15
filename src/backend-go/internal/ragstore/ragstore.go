@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -68,9 +69,13 @@ type Config struct {
 
 // ConfigFromEnv returns a RAG config populated from environment variables.
 func ConfigFromEnv() Config {
+	// RAG_DB_PATH is a *directory*; the SQLite store lives at
+	// <dir>/rags.db (the same convention the backend-go config and the
+	// /ragdir command use).
+	dbDir := getEnv("RAG_DB_PATH", "rags")
 	return Config{
 		Enabled:        getEnvBool("RAG_ENABLED", true),
-		DBPath:         getEnv("RAG_DB_PATH", "rags.db"),
+		DBPath:         filepath.Join(dbDir, "rags.db"),
 		ChunkSize:      getEnvInt("RAG_CHUNK_SIZE", 1500),
 		ChunkOverlap:   getEnvInt("RAG_CHUNK_OVERLAP", 300),
 		SearchLimit:    getEnvInt("RAG_SEARCH_LIMIT", 5),

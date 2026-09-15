@@ -267,7 +267,7 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Error("expected RAG disabled from env var")
 	}
 
-	os.Setenv("RAG_DB_PATH", "/custom/rags.db")
+	os.Setenv("RAG_DB_PATH", "/custom")
 	os.Setenv("RAG_CHUNK_SIZE", "1024")
 	defer os.Unsetenv("RAG_DB_PATH")
 	defer os.Unsetenv("RAG_CHUNK_SIZE")

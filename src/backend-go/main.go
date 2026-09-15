@@ -140,9 +140,8 @@ func main() {
 	// Rehydrate the in-memory uid→rawDir mapping from persisted settings so a
 	// /ragdir choice set before a server restart survives. Without this the
 	// fresh manager would forget the user's directory and silently fall back
-	// to the default RAG store (rag-db/rags.db).
+	// to the default RAG store (<cwd>/rags/rags.db).
 	ragMgr.LoadFromDB(d)
-
 	// --- Handlers ----------------------------------------------------------
 	// Build a per-user MCP manager over the shared default (possibly nil).
 	mgr := mcpclient.NewMCPManager(manager)

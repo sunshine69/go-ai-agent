@@ -177,6 +177,17 @@ func timeoutDuration(name string, fallback time.Duration) time.Duration {
 	return fallback
 }
 
+// resolveRAGDBPath joins an RAG directory (relative to the process cwd or
+// absolute) with the constant store filename "rags.db". RAG_DB_PATH is a
+// directory; the SQLite store lives at <dir>/rags.db — the same convention the
+// /ragdir command uses when it resolves a user's chosen directory.
+func resolveRAGDBPath(ragDBDir string) string {
+	if ragDBDir == "" {
+		ragDBDir = "rags"
+	}
+	return filepath.Join(ragDBDir, "rags.db")
+}
+
 // Load reads configuration from the environment. If envDotPath is a path to a
 // .env file that exists, it is sourced first (KEY=value lines).
 func Load(envDotPath string) *Config {
@@ -196,6 +207,14 @@ func Load(envDotPath string) *Config {
 	// the Python backend's computed default).
 	wd, _ := os.Getwd()
 	rAGDocsDir := envKey("RAG_DOCS_DIR", filepath.Join(wd, "resources", "rag_documents"))
+
+	// RAG_DB_PATH is a *directory* (relative to the process cwd or absolute)
+	// that holds the RAG SQLite store. The store file is resolved as
+	// <dir>/rags.db — the same convention /ragdir uses when it resolves a
+	// user's chosen directory. Kept relative so it is resolved against the cwd
+	// at open time, matching the existing relative .env values.
+	ragDBDir := envKey("RAG_DB_PATH", filepath.Join(wd, "rags"))
+	ragDBPath := resolveRAGDBPath(ragDBDir)
 
 	cfg := &Config{
 		Host:           envKey("HOST", "0.0.0.0"),
@@ -230,7 +249,9 @@ func Load(envDotPath string) *Config {
 		RAGChunkOverlap:   envInt("RAG_CHUNK_OVERLAP", 50),
 		RAGSearchLimit:    envInt("RAG_SEARCH_LIMIT", 5),
 		RAGScoreThreshold: envFloat("RAG_SCORE_THRESHOLD", 0.25),
-		RAGDBPath:         envKey("RAG_DB_PATH", filepath.Join(wd, "rags.db")),
+		// RAG_DBPath is the resolved RAG SQLite file: <dir>/rags.db where <dir>
+		// is the RAG_DB_PATH directory.
+		RAGDBPath:         ragDBPath,
 		RAGEmbeddingModel: envKey("RAG_EMBEDDING_MODEL", "nomic-embed"),
 	}
 	// DB: application datastore (users, conversations, messages). SQLite is the
