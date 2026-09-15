@@ -70,7 +70,7 @@ type Config struct {
 func ConfigFromEnv() Config {
 	return Config{
 		Enabled:        getEnvBool("RAG_ENABLED", true),
-		DBPath:         getEnv("RAG_SQLITE_PATH", "./rag.db"),
+		DBPath:         getEnv("RAG_DB_PATH", "rags.db"),
 		ChunkSize:      getEnvInt("RAG_CHUNK_SIZE", 1500),
 		ChunkOverlap:   getEnvInt("RAG_CHUNK_OVERLAP", 300),
 		SearchLimit:    getEnvInt("RAG_SEARCH_LIMIT", 5),

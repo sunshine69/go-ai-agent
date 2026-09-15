@@ -230,7 +230,7 @@ func Load(envDotPath string) *Config {
 		RAGChunkOverlap:   envInt("RAG_CHUNK_OVERLAP", 50),
 		RAGSearchLimit:    envInt("RAG_SEARCH_LIMIT", 5),
 		RAGScoreThreshold: envFloat("RAG_SCORE_THRESHOLD", 0.25),
-		RAGDBPath:         envKey("RAG_DB_PATH", filepath.Join(wd, ".geniq_rag.db")),
+		RAGDBPath:         envKey("RAG_DB_PATH", filepath.Join(wd, "rags.db")),
 		RAGEmbeddingModel: envKey("RAG_EMBEDDING_MODEL", "nomic-embed"),
 	}
 	// DB: application datastore (users, conversations, messages). SQLite is the

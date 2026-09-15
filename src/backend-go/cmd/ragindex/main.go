@@ -138,12 +138,12 @@ func run(args []string) error {
 		if err := os.MkdirAll(outDir, 0o755); err != nil {
 			return fmt.Errorf("create out dir %q: %w", outDir, err)
 		}
-		cfg.RAGDBPath = filepath.Join(outDir, ".geniq_rag.db")
+		cfg.RAGDBPath = filepath.Join(outDir, "rags.db")
 	} else if *outFlag != "" {
 		if err := os.MkdirAll(*outFlag, 0o755); err != nil {
 			return fmt.Errorf("create out dir %q: %w", *outFlag, err)
 		}
-		cfg.RAGDBPath = filepath.Join(*outFlag, ".geniq_rag.db")
+		cfg.RAGDBPath = filepath.Join(*outFlag, "rags.db")
 	}
 
 	if !cfg.RAGEnabled {

@@ -267,14 +267,14 @@ func TestConfigFromEnv(t *testing.T) {
 		t.Error("expected RAG disabled from env var")
 	}
 
-	os.Setenv("RAG_SQLITE_PATH", "/custom/rag.db")
+	os.Setenv("RAG_DB_PATH", "/custom/rags.db")
 	os.Setenv("RAG_CHUNK_SIZE", "1024")
-	defer os.Unsetenv("RAG_SQLITE_PATH")
+	defer os.Unsetenv("RAG_DB_PATH")
 	defer os.Unsetenv("RAG_CHUNK_SIZE")
 
 	cfg = ConfigFromEnv()
-	if cfg.DBPath != "/custom/rag.db" {
-		t.Errorf("expected DBPath='/custom/rag.db', got '%s'", cfg.DBPath)
+	if cfg.DBPath != "/custom/rags.db" {
+		t.Errorf("expected DBPath='/custom/rags.db', got '%s'", cfg.DBPath)
 	}
 	if cfg.ChunkSize != 1024 {
 		t.Errorf("expected ChunkSize=1024, got %d", cfg.ChunkSize)
