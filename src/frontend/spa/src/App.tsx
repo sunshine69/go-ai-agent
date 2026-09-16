@@ -7,7 +7,7 @@ import { DomainPills } from "./components/DomainPill";
 import { SubCategoryPills } from "./components/SubCategoryPill";
 import { ChatArea } from "./components/ChatArea";
 import { Login } from "./components/Login";
-import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir, getRAGWorkdir, setRAGWorkdir } from "./utils/api";
+import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir, getRAGWorkdir, setRAGWorkdir, getSystemPrompt, setSystemPrompt } from "./utils/api";
 
 // Base URL for the AI backend — read from .env file
 const API_BASE =
@@ -120,6 +120,17 @@ export default function App() {
     if (!showAuthedUI) return;
     getRAGWorkdir(API_BASE)
       .then((w) => setRAGDirState(w.value))
+      .catch(() => undefined);
+  }, [showAuthedUI]);
+
+  // Load the stored per-user custom system prompt once we're authed, so /sys
+  // can report it and a later message knows whether a custom prompt is active.
+  // Stored per-user via GET/POST /api/system. Omitting the /sys argument clears
+  // the stored value so the backend falls back to the code default.
+  useEffect(() => {
+    if (!showAuthedUI) return;
+    getSystemPrompt(API_BASE)
+      .then((p) => setSystemPromptState(p.system_prompt))
       .catch(() => undefined);
   }, [showAuthedUI]);
 
@@ -456,6 +467,7 @@ export default function App() {
   // Handles a slash-command typed in the input. Supported:
   //   /ctx [number]  set (with an argument) or report the per-user context limit
   //   /clear         start a fresh conversation (clears messages + input)
+  //   /sys [text]    set (with an argument) or report the per-user custom system prompt
   // Any other /command is ignored (left as a no-op, like the SPA's behaviour).
   const handleSlashCommand = (command: string) => {
     const parts = command.split(/\s+/).filter(Boolean);
@@ -489,6 +501,11 @@ export default function App() {
         // arg is the raw RAG directory value; omit the arg to report the
         // current value. Stored per-user via POST /api/ragdir.
         void handleRAGDir(arg);
+        break;
+      case "/sys":
+        // arg is the custom system prompt text; omit the arg to report the
+        // current value. Stored per-user via POST /api/system.
+        void handleSystemPrompt(arg);
         break;
       case "/help":
         appendFeedback("ok", COMMAND_HELP_TEXT);
@@ -636,6 +653,55 @@ export default function App() {
       );
     }
   };
+  // Handles the /sys slash-command. The backend stores a per-user custom system
+  // prompt via POST /api/system and uses it as the first message for every chat.
+  // Three modes, distinguished by the argument:
+  //
+  //   /sys              report the current (effective) system prompt
+  //   /sys default      reset to the code default (clear the stored value)
+  //   /sys [text]       set the custom system prompt (empty resets it)
+  const handleSystemPrompt = async (value?: string) => {
+    const v = (value ?? "").trim();
+
+    // Bare /sys with no argument: just report the current effective prompt.
+    if (v === "") {
+      try {
+        const current = await getSystemPrompt(API_BASE);
+        setSystemPromptState(current.system_prompt);
+        appendFeedback(
+          "ok",
+          current.system_prompt === ""
+            ? "No custom system prompt set (using the default)."
+            : `Current system prompt:\n${current.system_prompt}`
+        );
+        return;
+      } catch (e) {
+        appendFeedback(
+          "error",
+          "Failed to read system prompt: " + (e instanceof Error ? e.message : String(e))
+        );
+        return;
+      }
+    }
+
+    // Explicit "default" (case-insensitive) resets to the code default; any
+    // other non-empty value is stored verbatim.
+    const isReset = v === "default";
+    try {
+      const updated = await setSystemPrompt(API_BASE, v);
+      setSystemPromptState(updated.system_prompt);
+      if (isReset || updated.system_prompt === "") {
+        appendFeedback("ok", "Custom system prompt reset to the default.");
+      } else {
+        appendFeedback("ok", `System prompt set to:\n${updated.system_prompt}`);
+      }
+    } catch (e) {
+      appendFeedback(
+        "error",
+        "Failed to set system prompt: " + (e instanceof Error ? e.message : String(e))
+      );
+    }
+  };
   // Formats a token budget as a human-readable string.
   const fmt = (n: number): string =>
     Number.isFinite(n) ? n.toLocaleString() : "0";
@@ -652,6 +718,8 @@ export default function App() {
     "may call.\n" +
     "  /mcpdir [path]  Set the working-directory the default stdio MCP server " +
     "runs in. Later /mcp <spec> uses it. Omit path to show the current value.\n" +
+    "  /sys [text]  Set or report the per-user custom system prompt. If text is omitted, " +
+    "prints the current prompt.\n" +
     "  /help     Show this help message.";
 
   const [settings, setSettingsState] = useState<{ context_limit: number } | null>(
@@ -676,6 +744,11 @@ export default function App() {
   // know the current value. Loaded once from GET /api/ragdir; refreshed by
   // /ragdir.
   const [, setRAGDirState] = useState<string | null>(
+    null
+  );
+  // Tracks the stored per-user custom system prompt so /sys can report it.
+  // Loaded once from GET /api/system; refreshed by /sys.
+  const [, setSystemPromptState] = useState<string | null>(
     null
   );
 

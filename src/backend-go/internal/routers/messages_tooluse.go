@@ -181,7 +181,7 @@ func (m *messageStreamHandler) runToolUse(w http.ResponseWriter, r *http.Request
 	// "tool") are skipped here: the controller re-emits them from its own loop
 	// tracking (result.PersistMsgs), and they carry a tool_call_id that links
 	// back to the assistant tool_calls they answer.
-	msgs := []llm.ChatMessage{{Role: "system", Content: systemPrompt()}}
+	msgs := []llm.ChatMessage{{Role: "system", Content: resolveSystemPrompt(m.h.DB, currentUserIDOr(r, 0))}}
 	for _, tm := range conv.Messages {
 		if tm.Role != "user" && tm.Role != "assistant" {
 			continue
@@ -270,7 +270,7 @@ func (m *messageStreamHandler) runToolUseBlocking(r *http.Request, conv db.ConvV
 
 	// Build messages from stored history (same as runToolUse): tool_result
 	// turns (role "tool") are skipped because the controller re-emits them.
-	msgs := []llm.ChatMessage{{Role: "system", Content: systemPrompt()}}
+	msgs := []llm.ChatMessage{{Role: "system", Content: resolveSystemPrompt(m.h.DB, currentUserIDOr(r, 0))}}
 	for _, tm := range conv.Messages {
 		if tm.Role != "user" && tm.Role != "assistant" {
 			continue

@@ -71,6 +71,7 @@ func NewHandlers(mcpManager *mcpclient.MCPManager, llmClient *llm.Client, rag *r
 		DB:         db,
 		Frontend:   frontend,
 	}
+
 }
 
 // Cors returns the effective CORS settings for the middleware, sourced from the
@@ -132,6 +133,7 @@ func (h Handlers) ServeMux() http.Handler {
 	mcpdir := newMCPdirHandler(h.DB)
 	ragdir := newRagdirHandler(h.DB, h.ragManager)
 	settings := newSettingsHandler(h.DB)
+	systemPrompt := newSystemPromptHandler(h.DB)
 
 	mux.HandleFunc("/api/domains", requireAuth(domains.handle))
 	mux.HandleFunc("/api/messages", requireAuth(messages.handle))
@@ -166,6 +168,8 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("POST /api/mcpdir", requireAuth(mcpdir.handleSet))
 
 	mux.HandleFunc("GET /api/ragdir", requireAuth(ragdir.handleList))
+	mux.HandleFunc("GET /api/system", requireAuth(systemPrompt.handleList))
+	mux.HandleFunc("POST /api/system", requireAuth(systemPrompt.handleSet))
 	mux.HandleFunc("POST /api/ragdir", requireAuth(ragdir.handleSet))
 	// Serve the SPA (if configured) at /frontend/* before the /api/* mux, so
 	// frontend requests are handled by the static file server rather than the

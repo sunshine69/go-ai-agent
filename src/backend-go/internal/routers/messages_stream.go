@@ -184,7 +184,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	}
 
 	// Prepare system prompt
-	sysPrompt := systemPrompt()
+	sysPrompt := resolveSystemPrompt(m.h.DB, currentUserIDOr(r, 0))
 	// Prepare final message with context injection
 	var userMsg string
 	if strings.TrimSpace(contextText) != "" {
@@ -398,7 +398,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	}
 
 	// Prepare system prompt (same as in handleStreamChat)
-	sysPrompt := systemPrompt()
+	sysPrompt := resolveSystemPrompt(m.h.DB, currentUserIDOr(r, 0))
 
 	// Prepare final message with context injection
 	var userMsg string

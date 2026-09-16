@@ -144,6 +144,30 @@ export async function setRAGWorkdir(
   value: string
 ): Promise<RAGWorkdir> {
   return postJSON<RAGWorkdir>(apiBaseUrl, "/api/ragdir", { value });
+};
+// SystemPromptResponse is the client-facing view of the caller's resolved
+// system prompt (the effective value the backend will seed as the first
+// message). It matches the systemPromptResponse returned by GET/POST /api/system.
+export interface SystemPromptResponse {
+  system_prompt: string;
+}
+
+/** Returns the caller's effective system prompt. GET /api/system. */
+export async function getSystemPrompt(apiBaseUrl: string): Promise<SystemPromptResponse> {
+  return getJSON<SystemPromptResponse>(apiBaseUrl, "/api/system");
+}
+
+/**
+ * setSystemPrompt stores (or resets) the caller's custom system prompt.
+ * POST /api/system. The /sys slash command uses this so the prompt shapes the
+ * model's behaviour. Pass a non-empty value to store it; pass the token
+ * "default" (case-insensitive) or empty to reset to the code default.
+ */
+export async function setSystemPrompt(
+  apiBaseUrl: string,
+  prompt: string
+): Promise<SystemPromptResponse> {
+  return postJSON<SystemPromptResponse>(apiBaseUrl, "/api/system", { prompt });
 }
 /**
  * A fetch wrapper that attaches the bearer token and understands backend

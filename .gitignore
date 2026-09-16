@@ -1,10 +1,8 @@
-backend-go
 jwt_secret.txt
 **/dist/**
 *.db
 mcp-server/supersoniciq-mcp-server
 **/.playwright-mcp/**
-rag-indexer
 .geniq_rag.db*
 resources/**
 conversations.json

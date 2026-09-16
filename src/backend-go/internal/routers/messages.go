@@ -152,7 +152,7 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 	for _, t := range history {
 		chatHistory = append(chatHistory, llm.ChatMessage{Role: t.Role, Content: t.Content})
 	}
-	answer := m.h.LLM.Answer(r.Context(), systemPrompt(), chatHistory, contextText, msg)
+	answer := m.h.LLM.Answer(r.Context(), resolveSystemPrompt(m.h.DB, currentUserIDOr(r, 0)), chatHistory, contextText, msg)
 
 	// --- Persist the current turn -----------------------------------------
 	// The assistant answer is persisted separately from the user turn.
@@ -180,7 +180,7 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 // friendly mode (for everything else). It is intentionally free of any
 // company, brand, or organization-specific branding so it can run against any
 // knowledge base.
-func systemPrompt() string {
+func defaultSystemPrompt() string {
 	return `You are a helpful AI assistant with TWO identities:
 
 ## Identity 1: Knowledge Assistant
