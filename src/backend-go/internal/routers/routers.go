@@ -115,6 +115,29 @@ func (h *Handlers) applyUserCtxLimit(cfg *config.Config, r *http.Request) *confi
 	return cfg
 }
 
+// applyUserLLMURL returns the effective LLM base-URL for the request's
+// authenticated caller, honouring their stored per-user override (via /url)
+// over the configured default. When the user has no override (or a reset value)
+// it returns cfg.LLMBASEURL unchanged. It is nil-safe and MUST be applied where
+// the final ".../chat/completions" endpoint is built, so a user's /url choice
+// actually shapes the server a later message streams from.
+func (h *Handlers) applyUserLLMURL(cfg *config.Config, r *http.Request) string {
+	if cfg == nil {
+		return ""
+	}
+	base := cfg.LLMBASEURL
+	if h.DB == nil || h.DB.Settings == nil {
+		return base
+	}
+	uid, ok := currentUserID(r)
+	if !ok {
+		return base
+	}
+	if override := resolveLLMURL(h.DB, uid); override != "" {
+		return override
+	}
+	return base
+}
 // ServeMux builds the router for the backend: the /api/* handlers plus, when
 // configured, the /frontend/* SPA static file server.
 func (h Handlers) ServeMux() http.Handler {
@@ -134,6 +157,7 @@ func (h Handlers) ServeMux() http.Handler {
 	ragdir := newRagdirHandler(h.DB, h.ragManager)
 	settings := newSettingsHandler(h.DB)
 	systemPrompt := newSystemPromptHandler(h.DB)
+	llmURL := newLLMURLHandler(h.DB)
 
 	mux.HandleFunc("/api/domains", requireAuth(domains.handle))
 	mux.HandleFunc("/api/messages", requireAuth(messages.handle))
@@ -170,6 +194,8 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("GET /api/ragdir", requireAuth(ragdir.handleList))
 	mux.HandleFunc("GET /api/system", requireAuth(systemPrompt.handleList))
 	mux.HandleFunc("POST /api/system", requireAuth(systemPrompt.handleSet))
+	mux.HandleFunc("GET /api/llmurl", requireAuth(llmURL.handleList))
+	mux.HandleFunc("POST /api/llmurl", requireAuth(llmURL.handleSet))
 	mux.HandleFunc("POST /api/ragdir", requireAuth(ragdir.handleSet))
 	// Serve the SPA (if configured) at /frontend/* before the /api/* mux, so
 	// frontend requests are handled by the static file server rather than the

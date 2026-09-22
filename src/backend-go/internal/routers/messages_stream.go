@@ -224,6 +224,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	// (cfg.ContextLimit == 0) or the burst limit is not reached.
 	// Apply the caller's per-user context budget (via /ctx) before trimming.
 	cfg := m.h.applyUserCtxLimit(m.h.Cfg, r)
+	effectiveBase := m.h.applyUserLLMURL(cfg, r)
 	history = contextcompress.TrimContext(r.Context(), cfg, history)
 	historyCM := make([]llm.ChatMessage, 0, len(history))
 	for _, h := range history {
@@ -261,7 +262,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	defer cancel()
 
 	llamaReq, err := http.NewRequestWithContext(ctx, "POST",
-		m.h.Cfg.LLMBASEURL+"/chat/completions?stream=true",
+		effectiveBase+"/chat/completions?stream=true",
 		bytes.NewBuffer(data))
 	if err != nil {
 		writeSSEError(w, "failed to create request: "+err.Error())
@@ -269,7 +270,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	}
 
 	llamaReq.Header.Set("Content-Type", "application/json")
-	if m.h.Cfg.LLMAPIKey != "" && !strings.HasPrefix(m.h.Cfg.LLMBASEURL, "http://localhost") {
+	if m.h.Cfg.LLMAPIKey != "" && !strings.HasPrefix(effectiveBase, "http://localhost") {
 		llamaReq.Header.Set("Authorization", "Bearer "+m.h.Cfg.LLMAPIKey)
 	}
 
@@ -423,6 +424,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	// (cfg.ContextLimit == 0) or the burst limit is not reached.
 	// Apply the caller's per-user context budget (via /ctx) before trimming.
 	cfg := m.h.applyUserCtxLimit(m.h.Cfg, r)
+	effectiveBase := m.h.applyUserLLMURL(cfg, r)
 	history = contextcompress.TrimContext(r.Context(), cfg, history)
 	historyCM := make([]llm.ChatMessage, 0, len(history))
 	for _, h := range history {
@@ -460,7 +462,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	defer cancel()
 
 	llamaReq, err := http.NewRequestWithContext(ctx, "POST",
-		m.h.Cfg.LLMBASEURL+"/chat/completions?stream=true",
+		effectiveBase+"/chat/completions?stream=true",
 		bytes.NewBuffer(data))
 	if err != nil {
 		writeSSEError(w, "failed to create request: "+err.Error())
@@ -468,7 +470,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	}
 
 	llamaReq.Header.Set("Content-Type", "application/json")
-	if m.h.Cfg.LLMAPIKey != "" && !strings.HasPrefix(m.h.Cfg.LLMBASEURL, "http://localhost") {
+	if m.h.Cfg.LLMAPIKey != "" && !strings.HasPrefix(effectiveBase, "http://localhost") {
 		llamaReq.Header.Set("Authorization", "Bearer "+m.h.Cfg.LLMAPIKey)
 	}
 

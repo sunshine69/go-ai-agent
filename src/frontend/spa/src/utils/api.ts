@@ -145,6 +145,30 @@ export async function setRAGWorkdir(
 ): Promise<RAGWorkdir> {
   return postJSON<RAGWorkdir>(apiBaseUrl, "/api/ragdir", { value });
 };
+// LLMBaseURL is the client-side view of the per-user LLM base-URL selector,
+// matching the llmURLResponse returned by GET/POST /api/llmurl. It is the base
+// host only (e.g. "http://127.0.0.1:8080"); the system appends
+// "/chat/completions" itself. Empty when unset/reset, meaning the backend uses
+// its configured default host.
+export interface LLMBaseURL {
+  value: string;
+}
+
+/** Returns the caller's stored LLM base-URL selector. GET /api/llmurl. */
+export async function getLLMURL(apiBaseUrl: string): Promise<LLMBaseURL> {
+  return getJSON<LLMBaseURL>(apiBaseUrl, "/api/llmurl");
+}
+
+/** setLLMURL stores (or, with an empty payload, clears) the caller's LLM
+ * base-URL selector. POST /api/llmurl. The /url slash command uses this so a
+ * later message streams from the chosen server. Pass a base host to store it;
+ * pass "" to reset to the default host. */
+export async function setLLMURL(
+  apiBaseUrl: string,
+  value: string
+): Promise<LLMBaseURL> {
+  return postJSON<LLMBaseURL>(apiBaseUrl, "/api/llmurl", { value });
+}
 // SystemPromptResponse is the client-facing view of the caller's resolved
 // system prompt (the effective value the backend will seed as the first
 // message). It matches the systemPromptResponse returned by GET/POST /api/system.

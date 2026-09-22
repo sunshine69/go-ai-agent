@@ -7,10 +7,9 @@ import { DomainPills } from "./components/DomainPill";
 import { SubCategoryPills } from "./components/SubCategoryPill";
 import { ChatArea } from "./components/ChatArea";
 import { Login } from "./components/Login";
-import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir, getRAGWorkdir, setRAGWorkdir, getSystemPrompt, setSystemPrompt } from "./utils/api";
-
-// Base URL for the AI backend — read from .env file
+import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir, getRAGWorkdir, setRAGWorkdir, getSystemPrompt, setSystemPrompt, getLLMURL, setLLMURL } from "./utils/api";
 const API_BASE =
+
   (import.meta.env.VITE_BACKEND_URL as string) || "";
 
 interface Conversation {
@@ -131,6 +130,16 @@ export default function App() {
     if (!showAuthedUI) return;
     getSystemPrompt(API_BASE)
       .then((p) => setSystemPromptState(p.system_prompt))
+      .catch(() => undefined);
+  }, [showAuthedUI]);
+
+  // Load the stored per-user LLM base-URL once we're authed, so /url can report
+  // it and a later message knows which server to talk to. Stored per-user via
+  // GET/POST /api/llmurl. Empty means unset/reset, i.e. the backend's default.
+  useEffect(() => {
+    if (!showAuthedUI) return;
+    getLLMURL(API_BASE)
+      .then((r) => setLLMURLState(r.value))
       .catch(() => undefined);
   }, [showAuthedUI]);
 
@@ -507,6 +516,12 @@ export default function App() {
         // current value. Stored per-user via POST /api/system.
         void handleSystemPrompt(arg);
         break;
+      case "/url":
+        // arg is the OpenAI-compatible base URL to point the next message at
+        // (e.g. "http://127.0.0.1:8080"); the system appends /chat/completions.
+        // Omit the arg to report the current value; pass "reset" to clear it.
+        void handleURL(arg);
+        break;
       case "/help":
         appendFeedback("ok", COMMAND_HELP_TEXT);
         break;
@@ -702,6 +717,74 @@ export default function App() {
       );
     }
   };
+  // Handles /url: sets the per-user OpenAI-compatible LLM base URL the next
+  // chat message talks to. The system appends "/chat/completions".
+  //   /url              Report the current stored base URL (or "(unset)").
+  //   /url <base URL>   Point the next message at the given server.
+  //   /url reset        Reset to the system-default LLM URL.
+  const handleURL = async (value?: string) => {
+    const v = (value ?? "").trim();
+    const lower = v.toLowerCase();
+
+    // A bare /url with no argument: just report the current value.
+    if (v === "") {
+      try {
+        const current = await getLLMURL(API_BASE);
+        if (current.value === "") {
+          appendFeedback("ok", "LLM base URL is unset; using the system default.");
+        } else {
+          appendFeedback("ok", `LLM base URL: ${current.value}`);
+        }
+      } catch (e) {
+        appendFeedback(
+          "error",
+          "Failed to get LLM base URL: " + (e instanceof Error ? e.message : String(e))
+        );
+      }
+      return;
+    }
+
+    // "reset" clears the stored value (falls back to backend default).
+    const isReset = lower === "reset";
+
+    // Validate the URL the user provided: it must be a complete, usable
+    // endpoint (scheme + host). The trailing /chat/completions is added by the
+    // system, so the user does not include it (see backend llmurl.go).
+    let normalized = v;
+    if (!isReset) {
+      // Strip a trailing slash and any /chat/completions suffix the user
+      // might have included, so we store a clean base URL.
+      normalized = v
+        .replace(/\/chat\/completions\/?$/i, "")
+        .replace(/\/$/, "");
+
+      try {
+        const parsed = new URL(normalized);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          appendFeedback("error", "LLM URL must use http or https.");
+          return;
+        }
+      } catch {
+        appendFeedback("error", "Please enter a valid URL (e.g. http://127.0.0.1:8080).");
+        return;
+      }
+    }
+
+    try {
+      const updated = await setLLMURL(API_BASE, normalized);
+      setLLMURLState(updated.value);
+      if (isReset) {
+        appendFeedback("ok", "LLM base URL reset to the system default.");
+      } else {
+        appendFeedback("ok", `LLM base URL set to:\n${updated.value}`);
+      }
+    } catch (e) {
+      appendFeedback(
+        "error",
+        "Failed to set LLM base URL: " + (e instanceof Error ? e.message : String(e))
+      );
+    }
+  };
   // Formats a token budget as a human-readable string.
   const fmt = (n: number): string =>
     Number.isFinite(n) ? n.toLocaleString() : "0";
@@ -720,6 +803,9 @@ export default function App() {
     "runs in. Later /mcp <spec> uses it. Omit path to show the current value.\n" +
     "  /sys [text]  Set or report the per-user custom system prompt. If text is omitted, " +
     "prints the current prompt.\n" +
+    "  /url  [url|reset]  Point the next message at an OpenAI-compatible " +
+    "server (its base URL). Omit url to show the current value; use 'reset' to " +
+    "clear it.\n" +
     "  /help     Show this help message.";
 
   const [settings, setSettingsState] = useState<{ context_limit: number } | null>(
@@ -752,6 +838,11 @@ export default function App() {
     null
   );
 
+  // Tracks the stored per-user LLM base-URL so /url can report it. Loaded once
+  // from GET /api/llmurl; refreshed by /url.
+  const [, setLLMURLState] = useState<string | null>(
+    null
+  );
 
 
   const applyContextLimit = async (value: string) => {
