@@ -132,6 +132,8 @@ type streamChatRequest struct {
 
 // handleStreamChat implements POST /api/messages/stream with OpenAI-compatible streaming.
 func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[STREAM] ===== handleStreamChat START ===== method=%s", r.Method)
+	defer log.Printf("[STREAM] ===== handleStreamChat END =====")
 	if r.Method != http.MethodPost {
 		writeSSEError(w, "method not allowed")
 		return
@@ -142,12 +144,14 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		writeSSEError(w, "invalid request body: "+err.Error())
 		return
 	}
+	log.Printf("[STREAM] [1/14] decoded request: msg=%q conversationID=%v domain=%q subCategory=%q", req.Message, req.ConversationID, req.Domain, req.SubCategory)
 
 	msg := strings.TrimSpace(req.Message)
 	if msg == "" {
 		writeSSEError(w, "message is required")
 		return
 	}
+	log.Printf("[STREAM] [2/14] msg trimmed, len=%d", len(msg))
 
 	// Resolve conversation (owned by the caller; creates a new one if the
 	// requested id is missing or not owned).
@@ -157,20 +161,28 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		return
 	}
 	convID := conv.ID
+	log.Printf("[STREAM] [3/14] resolveConversation: uid=%d convID=%q requestedID=%q", currentUserIDOr(r, 0), conv.ID, derefStr(req.ConversationID))
 
 	// Persist the user turn that started this streaming response.
 	persistStreamUserTurn(m, r, conv, msg)
+	log.Printf("[STREAM] [4/14] persistStreamUserTurn done: convID=%q msg=%q", conv.ID, msg)
 
 	// Optional model-driven tool-use path: if enabled and the server can call
 	// tools, serve this turn through the tool-use controller instead of the
 	// hybrid ContextBuilder+text-injection path. If handled (or an error
 	// occurred), stop here — otherwise fall through to the hybrid path.
+	log.Printf("[STREAM] [5/14] runToolUse BEFORE: FEATURE_TOOL_USE=%q", m.h.Cfg.FEATURE_TOOL_USE)
 	if handled, runErr := m.runToolUse(w, r, conv, msg, req.Domain, req.SubCategory); handled || runErr != nil {
+		log.Printf("[STREAM] [5/14] runToolUse handled=%v runErr=%v -> RETURNING (tool-use path)", handled, runErr)
 		return
 	}
+	log.Printf("[STREAM] [5/14] runToolUse handled=false -> falling to hybrid path")
+
 	// Build context using ContextBuilder (MCP + RAG)
+	log.Printf("[STREAM] [6/14] BuildContext START: msg=%q domain=%q subCategory=%q", msg, req.Domain, req.SubCategory)
 	builder := ctxpkg.New(m.h.Cfg, m.h.mcpClient(r), m.h.ragManager.Client(currentUserIDOr(r, 0)))
 	contextText, sources, confluenceRefs := builder.BuildContext(msg, req.Domain, req.SubCategory)
+	log.Printf("[STREAM] [6/14] BuildContext done: contextLen=%d sources=%d confluenceRefs=%d", len(contextText), len(sources), len(confluenceRefs))
 
 	confluenceBaseURL := strings.TrimSuffix(m.h.Cfg.ConfluenceBaseURL, "/")
 	citations := []confluenceLink{}
@@ -182,9 +194,11 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 			})
 		}
 	}
+	log.Printf("[STREAM] [7/14] confluenceBaseURL=%q citations=%d", confluenceBaseURL, len(citations))
 
 	// Prepare system prompt
 	sysPrompt := resolveSystemPrompt(m.h.DB, currentUserIDOr(r, 0))
+	log.Printf("[STREAM] [8/14] resolveSystemPrompt: uid=%d promptLen=%d", currentUserIDOr(r, 0), len(sysPrompt))
 	// Prepare final message with context injection
 	var userMsg string
 	if strings.TrimSpace(contextText) != "" {
@@ -194,28 +208,33 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	} else {
 		userMsg = msg
 	}
+	log.Printf("[STREAM] [9/14] userMsg: hasContext=%v userMsgLen=%d", strings.TrimSpace(contextText) != "", len(userMsg))
 
 	// --- SSE Streaming Setup ---
+	log.Printf("[STREAM] [10/14] setting SSE headers, convID=%q", convID)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	// Send conversation ID early so frontend can track session
-	if _, err := w.Write([]byte(fmt.Sprintf(
+	if _, err := w.Write(fmt.Appendf(nil,
 		"event: context\nid: %d\ndata: {\"conversation_id\":\"%s\",\"sources\":%v}\n\n",
-		time.Now().UnixNano(), convID, formatSourcesForSSE(sources)))); err != nil {
+		time.Now().UnixNano(), convID, formatSourcesForSSE(sources))); err != nil {
+		log.Printf("[STREAM] wrote context event: err=%v", err)
 		return
 	}
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+	log.Printf("[STREAM] [11/14] context event sent: sources=%v", formatSourcesForSSE(sources))
 
 	// Build messages array including history from the resolved conversation
 	history := []db.DBMessage{}
 	for _, m := range conv.Messages {
 		history = append(history, m)
 	}
+	log.Printf("[STREAM] building history from conv.Messages: len=%d", len(conv.Messages))
 
 	// Compress the history if it exceeds the token budget. The streaming
 	// handler works in llm.ChatMessage form, so we build a []db.DBMessage
@@ -224,8 +243,11 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	// (cfg.ContextLimit == 0) or the burst limit is not reached.
 	// Apply the caller's per-user context budget (via /ctx) before trimming.
 	cfg := m.h.applyUserCtxLimit(m.h.Cfg, r)
+	log.Printf("[STREAM] [12/14] applyUserCtxLimit: ContextLimit=%d (cfg.LLMBASEURL=%q)", cfg.ContextLimit, cfg.LLMBASEURL)
 	effectiveBase := m.h.applyUserLLMURL(cfg, r)
+	log.Printf("[STREAM] [12/14] Resolved AI Endpoint Base: %q", effectiveBase)
 	history = contextcompress.TrimContext(r.Context(), cfg, history)
+	log.Printf("[STREAM] [12/14] TrimContext: history before=%d after=%d", len(history), len(history))
 	historyCM := make([]llm.ChatMessage, 0, len(history))
 	for _, h := range history {
 		historyCM = append(historyCM, llm.ChatMessage{
@@ -241,6 +263,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		}
 	}
 	msgs = append(msgs, llm.ChatMessage{Role: "user", Content: userMsg})
+	log.Printf("[STREAM] [13/14] msgs built: total=%d (system=1 history=%d user=1)", len(msgs), len(historyCM))
 
 	temp := m.h.Cfg.LLMTemperature
 	stream := true
@@ -256,7 +279,8 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		writeSSEError(w, "failed to marshal request")
 		return
 	}
-	log.Printf("[LLM] hybrid stream request: model=%s messages=%d stream=true", m.h.Cfg.LLMModel, len(msgs))
+	log.Printf("[STREAM] [13/14] reqBody marshalled: model=%q temp=%v stream=%v", m.h.Cfg.LLMModel, temp, stream)
+	log.Printf("[LLM] hybrid stream request: base=%s model=%s messages=%d stream=true", effectiveBase, m.h.Cfg.LLMModel, len(msgs))
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
@@ -268,6 +292,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		writeSSEError(w, "failed to create request: "+err.Error())
 		return
 	}
+	log.Printf("[STREAM] [14/14] created LLM request: POST %s/chat/completions?stream=true", effectiveBase)
 
 	llamaReq.Header.Set("Content-Type", "application/json")
 	if m.h.Cfg.LLMAPIKey != "" && !strings.HasPrefix(effectiveBase, "http://localhost") {
@@ -280,12 +305,14 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		writeSSEError(w, "failed to connect to LLM server: "+err.Error())
 		return
 	}
+	log.Printf("[STREAM] connected to LLM server: status=%d body=%v", llamaResp.StatusCode, llamaResp.Body != nil)
 	defer llamaResp.Body.Close()
 
 	rc := http.NewResponseController(w)
 
 	scanner := bufio.NewScanner(llamaResp.Body)
 	var accContent string
+	tokenCount := 0
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 4*1024*1024)
 
@@ -307,9 +334,11 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		if chunk := clientExtractedContent(payload); chunk != "" {
 			accContent += chunk
 		}
+		tokenCount++
 		// Send token as SSE event
 		eventData := fmt.Sprintf("{\"content\":\"%s\"}", escapeSSE(payload))
 		if _, err := w.Write([]byte("event: message\ndata: " + eventData + "\n\n")); err != nil {
+			log.Printf("[STREAM] wrote message token: err=%v", err)
 			return
 		}
 
@@ -318,6 +347,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		}
 		rc.Flush()
 	}
+	log.Printf("[STREAM] stream read complete: tokens=%d accContentLen=%d", tokenCount, len(accContent))
 
 	if scanner.Err() != nil {
 		log.Printf("stream reader error: %v", scanner.Err())
@@ -336,17 +366,21 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		convID, formatSourcesForSSE(sources), formatCitationsForSSE(citations))
 
 	persistStreamResponse(m, r, conv, accContent)
+	log.Printf("[STREAM] persistStreamResponse done: convID=%q contentLen=%d", conv.ID, len(accContent))
 	w.Write([]byte("event: done\ndata: {" + responseData + "}\n\n"))
 
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+	log.Printf("[STREAM] done event written")
 }
 
 // proxyLLMStream directly proxies the LLM server's stream to the client.
 // It builds context first, then sends a streaming request to the AI server
 // and relays the SSE chunks as-is (minimal transformation).
 func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Request) {
+	log.Printf("[PROXY] ===== proxyLLMStream START ===== method=%s", r.Method)
+	defer log.Printf("[PROXY] ===== proxyLLMStream END =====")
 	if r.Method != http.MethodPost {
 		writeSSEError(w, "method not allowed")
 		return
@@ -357,12 +391,14 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		writeSSEError(w, "invalid request body: "+err.Error())
 		return
 	}
+	log.Printf("[PROXY] [1/14] decoded request: msg=%q conversationID=%v domain=%q subCategory=%q", req.Message, req.ConversationID, req.Domain, req.SubCategory)
 
 	msg := strings.TrimSpace(req.Message)
 	if msg == "" {
 		writeSSEError(w, "message is required")
 		return
 	}
+	log.Printf("[PROXY] [2/14] msg trimmed, len=%d", len(msg))
 
 	// Resolve conversation (owned by the caller; creates a new one if the
 	// requested id is missing or not owned).
@@ -372,20 +408,28 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		return
 	}
 	convID := conv.ID
+	log.Printf("[PROXY] [3/14] resolveConversation: uid=%d convID=%q requestedID=%q", currentUserIDOr(r, 0), conv.ID, derefStr(req.ConversationID))
 
 	// Persist the user turn that started this streaming response.
 	persistStreamUserTurn(m, r, conv, msg)
+	log.Printf("[PROXY] [4/14] persistStreamUserTurn done: convID=%q msg=%q", conv.ID, msg)
 
 	// Optional model-driven tool-use path: if enabled and the server can call
 	// tools, serve this turn through the tool-use controller instead of the
 	// hybrid ContextBuilder+text-injection path. If handled (or an error
 	// occurred), stop here — otherwise fall through to the hybrid path.
+	log.Printf("[PROXY] [5/14] runToolUse BEFORE: FEATURE_TOOL_USE=%q", m.h.Cfg.FEATURE_TOOL_USE)
 	if handled, runErr := m.runToolUse(w, r, conv, msg, req.Domain, req.SubCategory); handled || runErr != nil {
+		log.Printf("[PROXY] [5/14] runToolUse handled=%v runErr=%v -> RETURNING (tool-use path)", handled, runErr)
 		return
 	}
+	log.Printf("[PROXY] [5/14] runToolUse handled=false -> falling to hybrid path")
+
 	// Build context using ContextBuilder (MCP + RAG)
+	log.Printf("[PROXY] [6/14] BuildContext START: msg=%q domain=%q subCategory=%q", msg, req.Domain, req.SubCategory)
 	builder := ctxpkg.New(m.h.Cfg, m.h.mcpClient(r), m.h.ragManager.Client(currentUserIDOr(r, 0)))
 	contextText, sources, confluenceRefs := builder.BuildContext(msg, req.Domain, req.SubCategory)
+	log.Printf("[PROXY] [6/14] BuildContext done: contextLen=%d sources=%d confluenceRefs=%d", len(contextText), len(sources), len(confluenceRefs))
 
 	confluenceBaseURL := strings.TrimSuffix(m.h.Cfg.ConfluenceBaseURL, "/")
 	citations := []confluenceLink{}
@@ -397,9 +441,11 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 			})
 		}
 	}
+	log.Printf("[PROXY] [7/14] confluenceBaseURL=%q citations=%d", confluenceBaseURL, len(citations))
 
 	// Prepare system prompt (same as in handleStreamChat)
 	sysPrompt := resolveSystemPrompt(m.h.DB, currentUserIDOr(r, 0))
+	log.Printf("[PROXY] [8/14] resolveSystemPrompt: uid=%d promptLen=%d", currentUserIDOr(r, 0), len(sysPrompt))
 
 	// Prepare final message with context injection
 	var userMsg string
@@ -410,12 +456,14 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	} else {
 		userMsg = msg
 	}
+	log.Printf("[PROXY] [9/14] userMsg: hasContext=%v userMsgLen=%d", strings.TrimSpace(contextText) != "", len(userMsg))
 
 	// Build messages array including history from the resolved conversation
 	history := []db.DBMessage{}
 	for _, m := range conv.Messages {
 		history = append(history, m)
 	}
+	log.Printf("[PROXY] building history from conv.Messages: len=%d", len(conv.Messages))
 
 	// Compress the history if it exceeds the token budget. The streaming
 	// handler works in llm.ChatMessage form, so we build a []db.DBMessage
@@ -424,8 +472,11 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	// (cfg.ContextLimit == 0) or the burst limit is not reached.
 	// Apply the caller's per-user context budget (via /ctx) before trimming.
 	cfg := m.h.applyUserCtxLimit(m.h.Cfg, r)
+	log.Printf("[PROXY] [12/14] applyUserCtxLimit: ContextLimit=%d (cfg.LLMBASEURL=%q)", cfg.ContextLimit, cfg.LLMBASEURL)
 	effectiveBase := m.h.applyUserLLMURL(cfg, r)
+	log.Printf("[PROXY] [12/14] Resolved AI Endpoint Base: %q", effectiveBase)
 	history = contextcompress.TrimContext(r.Context(), cfg, history)
+	log.Printf("[PROXY] [12/14] TrimContext: history before=%d after=%d", len(history), len(history))
 	historyCM := make([]llm.ChatMessage, 0, len(history))
 	for _, h := range history {
 		historyCM = append(historyCM, llm.ChatMessage{
@@ -441,6 +492,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		}
 	}
 	msgs = append(msgs, llm.ChatMessage{Role: "user", Content: userMsg})
+	log.Printf("[PROXY] [13/14] msgs built: total=%d (system=1 history=%d user=1)", len(msgs), len(historyCM))
 
 	// Prepare the request to LLM server
 	temp := m.h.Cfg.LLMTemperature
@@ -457,7 +509,8 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		writeSSEError(w, "failed to marshal request")
 		return
 	}
-	log.Printf("[LLM] hybrid stream request: model=%s messages=%d stream=true", m.h.Cfg.LLMModel, len(msgs))
+	log.Printf("[PROXY] [13/14] reqBody marshalled: model=%q temp=%v stream=%v", m.h.Cfg.LLMModel, temp, stream)
+	log.Printf("[LLM] hybrid stream request: base=%s model=%s messages=%d stream=true", effectiveBase, m.h.Cfg.LLMModel, len(msgs))
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
@@ -468,6 +521,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		writeSSEError(w, "failed to create request: "+err.Error())
 		return
 	}
+	log.Printf("[PROXY] [14/14] created LLM request: POST %s/chat/completions?stream=true", effectiveBase)
 
 	llamaReq.Header.Set("Content-Type", "application/json")
 	if m.h.Cfg.LLMAPIKey != "" && !strings.HasPrefix(effectiveBase, "http://localhost") {
@@ -480,6 +534,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		writeSSEError(w, "failed to connect to LLM server: "+err.Error())
 		return
 	}
+	log.Printf("[PROXY] connected to LLM server: status=%d body=%v", llamaResp.StatusCode, llamaResp.Body != nil)
 	defer llamaResp.Body.Close()
 
 	// Set headers for SSE stream back to frontend
@@ -497,6 +552,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 
 	scanner := bufio.NewScanner(llamaResp.Body)
 	var accContent string
+	tokenCount := 0
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 4*1024*1024)
 
@@ -518,8 +574,10 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		if chunk := clientExtractedContent(payload); chunk != "" {
 			accContent += chunk
 		}
+		tokenCount++
 		// Relay the chunk directly to client (minimal transformation)
 		if _, err := w.Write([]byte("event: message\ndata: " + payload + "\n\n")); err != nil {
+			log.Printf("[PROXY] wrote message token: err=%v", err)
 			return
 		}
 
@@ -528,6 +586,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		}
 		rc.Flush()
 	}
+	log.Printf("[PROXY] stream read complete: tokens=%d accContentLen=%d", tokenCount, len(accContent))
 
 	if scanner.Err() != nil {
 		log.Printf("stream reader error: %v", scanner.Err())
@@ -546,9 +605,11 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		convID, formatSourcesForSSE(sources), formatCitationsForSSE(citations))
 
 	persistStreamResponse(m, r, conv, accContent)
+	log.Printf("[PROXY] persistStreamResponse done: convID=%q contentLen=%d", conv.ID, len(accContent))
 	w.Write([]byte("event: done\ndata: {" + responseData + "}\n\n"))
 
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+	log.Printf("[PROXY] done event written")
 }

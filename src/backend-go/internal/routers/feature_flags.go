@@ -18,7 +18,7 @@ import (
 // dependencies. It is used by the message handlers when the FEATURE_TOOL_USE
 // knob enables tool mode. A nil controller means "tool use unavailable" — the
 // caller falls back to the hybrid ContextBuilder path.
-func newToolUseController(r *http.Request, h Handlers) *tooluse.ToolUse {
+func newToolUseController(r *http.Request, h Handlers, baseURL string) *tooluse.ToolUse {
 	// When MCP is disabled the model has no tools to call, so there is no
 	// point entering tool mode; the controller would loop with every tool
 	// returning "unavailable".
@@ -30,7 +30,7 @@ func newToolUseController(r *http.Request, h Handlers) *tooluse.ToolUse {
 	if maxCalls <= 0 {
 		maxCalls = 5
 	}
-	return tooluse.New(h.LLM, provider, maxCalls)
+	return tooluse.New(h.LLM.WithBaseURL(baseURL), provider, maxCalls)
 }
 
 // shouldUseToolUse reports whether the tool-use controller should serve the

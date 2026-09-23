@@ -16,6 +16,7 @@ package routers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -133,9 +134,11 @@ func (h *Handlers) applyUserLLMURL(cfg *config.Config, r *http.Request) string {
 	if !ok {
 		return base
 	}
-	if override := resolveLLMURL(h.DB, uid); override != "" {
+	override := resolveLLMURL(h.DB, uid)
+	if override != "" {
 		return override
 	}
+	log.Printf("[LLMURL] applyUserLLMURL uid=%d cfg=%q override=%q -> base=%q", uid, cfg.LLMBASEURL, override, base)
 	return base
 }
 // ServeMux builds the router for the backend: the /api/* handlers plus, when

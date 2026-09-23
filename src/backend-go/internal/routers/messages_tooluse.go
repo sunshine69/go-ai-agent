@@ -2,6 +2,7 @@ package routers
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -165,15 +166,22 @@ func (m *messageStreamHandler) runToolUse(w http.ResponseWriter, r *http.Request
 	// cancelled if the client disconnects, so no extra deadline is needed.
 	toolCtx := r.Context()
 
+	// Resolve the user's per-user LLM URL override (/url endpoint). This is
+	// the critical fix: runToolUse previously ignored the override and always
+	// used m.h.Cfg.LLMBASEURL, causing responses to be sent to the wrong host.
+	effectiveBase := m.h.applyUserLLMURL(m.h.Cfg, r)
+	log.Printf("[LLMURL] runToolUse: uid=%d cfg.LLMBASEURL=%q override=%q -> effective=%q",
+		currentUserIDOr(r, 0), m.h.Cfg.LLMBASEURL, resolveLLMURL(m.h.DB, currentUserIDOr(r, 0)), effectiveBase)
+
 	// Build the controller. A nil controller means MCP is disabled, so there is
 	// no point entering tool mode — fall back to hybrid.
-	ctl := newToolUseController(r, m.h)
+	ctl := newToolUseController(r, m.h, effectiveBase)
 	if ctl == nil {
 		return false, nil
 	}
 	// Probe-confirm tool-call support in "auto" mode (or honor "true"). When
 	// the server cannot call tools we return false so the caller keeps serving.
-	if !shouldUseToolUse(toolCtx, m.h.Cfg, m.h.LLM) {
+	if !shouldUseToolUse(toolCtx, m.h.Cfg, m.h.LLM.WithBaseURL(effectiveBase)) {
 		return false, nil
 	}
 
@@ -256,15 +264,20 @@ func (m *messageStreamHandler) runToolUseBlocking(r *http.Request, conv db.ConvV
 	// Scope the loop to a generous timeout.
 	toolCtx := r.Context()
 
+	// Resolve the user's per-user LLM URL override (/url endpoint). This is
+	// the critical fix: runToolUseBlocking previously ignored the override and
+	// always used m.h.Cfg.LLMBASEURL, causing responses to be sent to the wrong host.
+	effectiveBase := m.h.applyUserLLMURL(m.h.Cfg, r)
+
 	// Build the controller. A nil controller means MCP is disabled, so there is
 	// no point entering tool mode — fall back to hybrid.
-	ctl := newToolUseController(r, m.h)
+	ctl := newToolUseController(r, m.h, effectiveBase)
 	if ctl == nil {
 		return false, nil
 	}
 	// Probe-confirm tool-call support in "auto" mode (or honor "true"). When
 	// the server cannot call tools we return false so the caller keeps serving.
-	if !shouldUseToolUse(toolCtx, m.h.Cfg, m.h.LLM) {
+	if !shouldUseToolUse(toolCtx, m.h.Cfg, m.h.LLM.WithBaseURL(effectiveBase)) {
 		return false, nil
 	}
 

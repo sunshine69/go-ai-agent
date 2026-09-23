@@ -197,6 +197,22 @@ func New(cfg Config) *Client {
 	return &Client{cfg: cfg, backend: detectBackend(cfg), http: &http.Client{Timeout: timeout}}
 }
 
+// WithBaseURL returns a copy of the client that targets a different
+// OpenAI-compatible base host. It is used to honour a user's per-user /url
+// override without mutating the shared default client (which the process-wide
+// Config binds to). The returned client keeps the model, api key, backend
+// family and HTTP timeout; only BaseURL changes.
+func (c *Client) WithBaseURL(baseURL string) *Client {
+	clone := *c
+	clone.cfg.BaseURL = baseURL
+	// Re-resolve the backend family for the new host: it affects the wire
+	// tool_choice representation. Backend is detected from URL/model when
+	// not explicitly set.
+	clone.cfg.Backend = ""
+	clone.backend = detectBackend(clone.cfg)
+	return &clone
+}
+
 // Backend reports the resolved wire-format family ("llama_cpp", "ollama", or
 // "" for the generic OpenAI object form). It is safe to call before any request.
 func (c *Client) Backend() string { return c.backend }
@@ -249,6 +265,20 @@ func (c *Client) SetHTTPClient(h *http.Client) { c.http = h }
 func (c *Client) Temperature() *float64 {
 	t := c.cfg.Temperature
 	return &t
+}
+
+// endpoint returns the fully-resolved OpenAI-compatible chat-completions URL
+// this Client will POST to, before any request is sent. It joins c.cfg.BaseURL
+// (the per-user /config base host, e.g. http://192.168.20.46:11434) with the
+// fixed "/chat/completions" path, so an operator can read the exact destination
+// URL from the log for every message send. The caller controls which query
+// string (?stream=true) is appended per call site.
+func (c *Client) endpoint(stream bool) string {
+	path := "/chat/completions"
+	if stream {
+		path += "?stream=true"
+	}
+	return strings.TrimSuffix(c.cfg.BaseURL, "/") + path
 }
 
 // CompletionRequest is the body of a chat completion request. Set Stream to
@@ -388,6 +418,9 @@ func (c *Client) Answer(ctx context.Context, system string, history []ChatMessag
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 
+	// [LLM] log the fully-resolved AI endpoint URL before we connect.
+	log.Printf("[LLM] sending to AI endpoint: POST %s/chat/completions model=%s backend=%s",
+		c.cfg.BaseURL, c.cfg.Model, c.backend)
 	httpResp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Sprintf("Sorry, I encountered an error: %s", err.Error())
@@ -492,6 +525,9 @@ func (c *Client) AnswerStream(ctx context.Context, system string, history []Chat
 		return fmt.Errorf("new request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// [LLM] log the fully-resolved AI endpoint URL before we connect.
+	log.Printf("[LLM] sending to AI endpoint: POST %s model=%s backend=%s",
+		c.endpoint(true), c.cfg.Model, c.backend)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 
@@ -589,6 +625,9 @@ func (c *Client) Complete(ctx context.Context, reqBody CompletionRequest) (*Comp
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if c.cfg.APIKey != "" {
+		// [LLM] log the fully-resolved AI endpoint URL before we connect.
+		log.Printf("[LLM] sending to AI endpoint: POST %s/chat/completions model=%s backend=%s",
+			c.cfg.BaseURL, c.cfg.Model, c.backend)
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
 
@@ -632,6 +671,9 @@ func (c *Client) StreamMessages(ctx context.Context, reqBody CompletionRequest, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	// [LLM] log the fully-resolved AI endpoint URL before we connect.
+	log.Printf("[LLM] sending to AI endpoint: POST %s model=%s backend=%s",
+		c.endpoint(true), c.cfg.Model, c.backend)
 	if c.cfg.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
@@ -713,6 +755,10 @@ func (c *Client) StreamTurn(ctx context.Context, reqBody CompletionRequest, sink
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
 
+	// [LLM] log the fully-resolved AI endpoint URL before we connect,
+	// so the AI URL is visible in the backend log for every message send.
+	log.Printf("[LLM] sending to AI endpoint: POST %s/chat/completions?stream=true model=%s backend=%s",
+		c.cfg.BaseURL, c.cfg.Model, c.backend)
 	httpResp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("streaming request failed: %w", err)

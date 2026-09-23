@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"log"
 	"strings"
 
 	"github.com/sunshine69/go-ai-agent/backend-go/internal/db"
@@ -71,6 +72,7 @@ func resolveLLMURL(dbStore *db.DB, uid int64) string {
 	if err != nil {
 		return ""
 	}
+	log.Printf("[LLMURL] resolveLLMURL uid=%d raw=%q", uid, raw)
 	return normalizeLLMBaseURL(raw)
 }
 
@@ -85,6 +87,7 @@ func normalizeLLMBaseURL(raw string) string {
 	if strings.EqualFold(v, defaultLLMBaseURL) {
 		// A value identical to the default carries no information; return
 		// empty so it is treated as unset/reset and falls back to config.
+	log.Printf("[LLMURL] normalizeLLMBaseURL raw=%q -> %q", raw, v)
 		return ""
 	}
 	return v
