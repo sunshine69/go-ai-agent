@@ -501,6 +501,15 @@ export default function App() {
     // Intercept slash-commands before they ever reach the model. The backend
     // treats "/ctx ..." as a real message unless the frontend consumes it here,
     // which would leak the raw command to the LLM.
+    // The `/m <model>` command lives in handleSend (it calls
+    // parseModelCommand + setModel), but handleSlashCommand's switch below has
+    // no `/m` case. Route it to handleSend BEFORE the generic slash dispatch so
+    // it never falls into handleSlashCommand's "Unknown command" default.
+    if (parseModelCommand(text)) {
+      handleSend(text);
+      setInputValue("");
+      return;
+    }
     if (text.startsWith("/")) {
       handleSlashCommand(text);
       setInputValue("");

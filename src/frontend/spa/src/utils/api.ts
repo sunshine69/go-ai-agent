@@ -243,12 +243,20 @@ export async function setModel(
  */
 export function parseModelCommand(input: string): { model: string } | null {
   const trimmed = input.trim();
-  if (!trimmed.startsWith("/m") || trimmed.length === 2) {
+  // The `/m` command is distinguished from other slash commands that share
+  // the `/m` prefix (e.g. `/mcp`, `/mcpdir`). A bare `/m` (length 2) selects
+  // the current model; otherwise the char after `/m` must be whitespace so
+  // that `/mcp`, `/mcpdir`, `/models`, etc. are NOT treated as model commands.
+  if (!trimmed.startsWith("/m")) {
     return null;
   }
-  // Match `/m` followed by whitespace then the model name.
-  const rest = trimmed.slice(2).trim();
-  return { model: rest };
+  if (trimmed.length === 2) {
+    return { model: "" };
+  }
+  if (!/^\s/.test(trimmed[2])) {
+    return null;
+  }
+  return { model: trimmed.slice(3).trim() };
 }
 /**
  * A fetch wrapper that attaches the bearer token and understands backend
