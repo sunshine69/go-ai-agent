@@ -7,7 +7,7 @@ import { DomainPills } from "./components/DomainPill";
 import { SubCategoryPills } from "./components/SubCategoryPill";
 import { ChatArea } from "./components/ChatArea";
 import { Login } from "./components/Login";
-import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir, getRAGWorkdir, setRAGWorkdir, getSystemPrompt, setSystemPrompt, getLLMURL, setLLMURL } from "./utils/api";
+import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir, getRAGWorkdir, setRAGWorkdir, getSystemPrompt, setSystemPrompt, getLLMURL, setLLMURL, getModelStatus, setModel, parseModelCommand } from "./utils/api";
 const API_BASE =
 
   (import.meta.env.VITE_BACKEND_URL as string) || "";
@@ -37,6 +37,12 @@ export default function App() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [currentConversationId, setCurrentConversationId] = useState("");
   const [domains, setDomains] = useState<Domain[]>([]);
+  // The LLM model currently in effect (from GET /api/model/status). Displayed in
+  // the chat input line so the user sees which model they are talking to.
+  const [modelName, setModelName] = useState<string | null>(null);
+  // Transient message shown under the input after a `/m` command, confirming
+  // the switch (or showing the current model for a bare `/m`).
+  const [modelResponse, setModelResponse] = useState<string | null>(null);
   // Whether the slide-in sidebar is open (mobile only; ignored on desktop
   // where the sidebar is always visible inline).
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -180,10 +186,22 @@ export default function App() {
       });
   }, [showAuthedUI]);
 
-  // --- Fetch conversations on mount ---
+  // --- Fetch current model on mount ---
+  useEffect(() => {
+    if (!showAuthedUI) return;
+    getModelStatus(API_BASE).then((status) => {
+      setModelName(status?.model || null);
+    });
+  }, [showAuthedUI]);
   useEffect(() => {
     if (showAuthedUI) refreshConversations();
   }, [showAuthedUI]);
+  // --- Auto-clear the model command confirmation after a few seconds ---
+  useEffect(() => {
+    if (!modelResponse) return;
+    const t = window.setTimeout(() => setModelResponse(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [modelResponse]);
 
   // --- "Tail mode" (auto-stick to bottom) ---
   // While streaming we normally pin the scroll container to its bottom so the
@@ -410,6 +428,25 @@ export default function App() {
 
   const handleSend = async (text: string) => {
     if (!text.trim()) return;
+
+    // Intercept the `/m <model>` command so it never reaches the LLM. A bare
+    // `/m` just shows the current model; `/m <name>` switches models.
+    const modelCmd = parseModelCommand(text);
+    if (modelCmd) {
+      const value = modelCmd.model.trim();
+      if (value === "") {
+        setModelName(modelName);
+        return;
+      }
+      try {
+        const applied = await setModel(API_BASE, { model: value });
+        setModelName(applied);
+        setModelResponse(`✓ Now using ${applied}.`);
+      } catch (err) {
+        setModelResponse(`Could not switch model: ${(err as Error).message}`);
+      }
+      return;
+    }
 
     // Optimistic UI: show user message immediately
     setMessages((prev) => [
@@ -991,6 +1028,8 @@ export default function App() {
           messages={messages}
           streamingState={streamingState}
           scopeLabel={scopeLabel}
+          modelLabel={modelName ? `Model: ${modelName}` : "Model: n/a"}
+          modelResponse={modelResponse}
           inputRef={inputRef}
           inputValue={inputValue}
           setInputValue={setInputValue}

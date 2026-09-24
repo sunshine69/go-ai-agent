@@ -10,6 +10,7 @@
 //   - forms.go         GET /api/forms
 //   - processes.go     GET /api/processes[/{id}|/{id}/owner]
 //   - auth.go          POST /api/auth/register|login, GET /api/auth/me
+//   - model.go         GET /api/model/status, POST /api/model/set
 //
 // Note: skills is intentionally omitted per project decision.
 package routers
@@ -161,7 +162,7 @@ func (h Handlers) ServeMux() http.Handler {
 	settings := newSettingsHandler(h.DB)
 	systemPrompt := newSystemPromptHandler(h.DB)
 	llmURL := newLLMURLHandler(h.DB)
-
+	model := newModelHandler(h)
 	mux.HandleFunc("/api/domains", requireAuth(domains.handle))
 	mux.HandleFunc("/api/messages", requireAuth(messages.handle))
 	mux.HandleFunc("/api/messages/stream", requireAuth(messagesStream.proxyLLMStream))    // Direct proxy to LLM
@@ -190,6 +191,8 @@ func (h Handlers) ServeMux() http.Handler {
 	mux.HandleFunc("GET /api/settings", requireAuth(settings.handleList))
 	mux.HandleFunc("POST /api/settings", requireAuth(settings.handleSet))
 	mux.HandleFunc("/api/auth/me/profile/password", auth.handlePasswordChange) // POST
+	mux.HandleFunc("/api/model/status", model.handleStatus)
+	mux.HandleFunc("/api/model/set", model.handleSet)
 
 	mux.HandleFunc("GET /api/mcpdir", requireAuth(mcpdir.handleList))
 	mux.HandleFunc("POST /api/mcpdir", requireAuth(mcpdir.handleSet))

@@ -7,6 +7,8 @@ interface ChatAreaProps {
   messages: ChatMessage[];
   streamingState: StreamingState;
   scopeLabel: string;
+  modelLabel: string;
+  modelResponse: string | null;
   inputRef: React.RefObject<HTMLTextAreaElement>;
   inputValue: string;
   setInputValue: (value: string) => void;
@@ -21,6 +23,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   messages,
   streamingState,
   scopeLabel,
+  modelLabel,
+  modelResponse,
   inputRef,
   inputValue,
   setInputValue,
@@ -69,6 +73,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       {/* Scope label */}
       {scopeLabel && (
         <div className="chat-scope-label">{scopeLabel}</div>
+
+      )}
+      {/* Model label */}
+      {modelLabel && (
+        <div className="chat-model-label">{modelLabel}</div>
+      )}
+
+      {/* Model command response */}
+      {modelResponse && (
+        <div className="chat-model-response">{modelResponse}</div>
       )}
 
       {/* Chat history */}

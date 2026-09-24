@@ -254,6 +254,17 @@ func detectBackend(cfg Config) string {
 // Model returns the configured model name.
 func (c *Client) Model() string { return c.cfg.Model }
 
+// SetModel overrides the configured model name at runtime, allowing the current
+// model to be changed without restarting the server (the SPA's `/m` command).
+// Subsequent completion requests use the new model. A blank model name is a
+// no-op so callers can pass user input without pre-filtering.
+func (c *Client) SetModel(model string) {
+	if model == "" {
+		return
+	}
+	c.cfg.Model = model
+}
+
 // SetHTTPClient overrides the HTTP client (used in tests).
 func (c *Client) SetHTTPClient(h *http.Client) { c.http = h }
 
@@ -286,8 +297,8 @@ func (c *Client) endpoint(stream bool) string {
 // are optional and only sent when the caller wants the model to be able to call
 // MCP tools (function calling).
 type CompletionRequest struct {
-	Model       string           `json:"model"`
 	Messages    []ChatMessage    `json:"messages"`
+	Model       string           `json:"model"`
 	Temperature *float64         `json:"temperature,omitempty"`
 	MaxTokens   *int             `json:"max_tokens,omitempty"`
 	Stream      *bool            `json:"stream,omitempty"`

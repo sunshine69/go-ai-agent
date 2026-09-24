@@ -193,6 +193,63 @@ export async function setSystemPrompt(
 ): Promise<SystemPromptResponse> {
   return postJSON<SystemPromptResponse>(apiBaseUrl, "/api/system", { prompt });
 }
+// --- Model selection (see routers/model.go) ---
+
+/** ModelStatus is the client-side shape of the /api/model/status response. */
+export interface ModelStatus {
+  model: string;
+}
+
+/** POST /api/model/set body: the new model name to switch to. */
+export interface SetModelRequest {
+  model: string;
+}
+
+/**
+ * Returns the currently configured model name — GET /api/model/status. Used by
+ * the SPA's `/m` command so the user can see which model they are talking to.
+ */
+export async function getModelStatus(
+  apiBaseUrl: string
+): Promise<ModelStatus | null> {
+  try {
+    return await getJSON<ModelStatus>(apiBaseUrl, "/api/model/status");
+  } catch {
+    // Model endpoint is optional (backend without LLM wiring); never fatal.
+    return null;
+  }
+}
+
+/**
+ * Switches the active model at runtime — POST /api/model/set. Returns the new
+ * model name once applied. A failure surfaces the backend detail so the caller
+ * can show a transient toast; it is used by the `/m <model>` chat command.
+ */
+export async function setModel(
+  apiBaseUrl: string,
+  payload: SetModelRequest
+): Promise<string> {
+  const res = await postJSON<ModelStatus>(apiBaseUrl, "/api/model/set", payload);
+  return res.model;
+}
+
+/**
+ * Parses a `/m` command typed in the chat input. When the trimmed input starts
+ * with `/m`, returns the remaining model name (trimmed, or the bare `/m` with an
+ * empty model to indicate "show current"). Returns null when the input is not a
+ * `/m` command so the caller can fall back to a normal message send.
+ *
+ * Example: `/m gpt-4o` -> { model: "gpt-4o" }; `/m` -> { model: "" }.
+ */
+export function parseModelCommand(input: string): { model: string } | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/m") || trimmed.length === 2) {
+    return null;
+  }
+  // Match `/m` followed by whitespace then the model name.
+  const rest = trimmed.slice(2).trim();
+  return { model: rest };
+}
 /**
  * A fetch wrapper that attaches the bearer token and understands backend
  * auth-rejection semantics.
