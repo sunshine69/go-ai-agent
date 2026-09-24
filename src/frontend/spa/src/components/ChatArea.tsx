@@ -1,5 +1,6 @@
 import React, { useEffect, useCallback } from "react";
 import { MessageBubble } from "./MessageBubble";
+
 import type { ChatMessage, StreamingState } from "../hooks/useStreaming";
 
 interface ChatAreaProps {
@@ -16,6 +17,10 @@ interface ChatAreaProps {
   isLoading: boolean;
   onSend: (e: React.FormEvent) => void;
   onStop: () => void;
+  onMicClick: () => void;
+  ttsEnabled: boolean;
+  onToggleTts: () => void;
+  isSpeaking: boolean;
 }
 
 export const ChatArea: React.FC<ChatAreaProps> = ({
@@ -32,6 +37,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   isLoading,
   onSend,
   onStop,
+  onMicClick,
+  ttsEnabled,
+  onToggleTts,
+  isSpeaking,
 }) => {
   // Check if we're currently streaming with content
   const hasStreamingContent =
@@ -159,6 +168,50 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               }
             }}
           />
+          {!isLoading && (
+            <button
+              className="chat-input-mic"
+              type="button"
+              onClick={onMicClick}
+              title="Speak (English only)"
+            >
+              <svg
+                className="chat-input-mic-icon"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+              >
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            </button>
+          )}
+          <button
+            className={`chat-input-tts${isSpeaking && ttsEnabled ? " is-speaking" : ""}`}
+            type="button"
+            onClick={onToggleTts}
+            title={ttsEnabled ? "Turn off text-to-speech" : "Turn on text-to-speech"}
+          >
+            <svg
+              className="chat-input-tts-icon"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+            >
+              {ttsEnabled ? (
+                <>
+                  <path d="M3 9v6h5l7 5V4L8 9H3z" />
+                  <path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21c.91.44 1.5 1.4 1.5 2.5 0 1.1-.59 2.06-1.5 2.5v2.21c1.48-.74 2.5-2.26 2.5-4.03z" />
+                  <path d="M14 3.23v2.06c2.89.74 5 3.37 5 6.71 0 3.34-2.11 5.97-5 6.71v2.06c4.01-.91 7-4.49 7-8.77S18.01 4.14 14 3.23z" />
+                </>
+              ) : (
+                <>
+                  <path d="M3 9v6h5l7 5V4L8 9H3z" />
+                  <line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </>
+              )}
+            </svg>
+          </button>
           {isLoading ? (
             <button className="chat-input-stop" onClick={onStop} type="button">
               <svg

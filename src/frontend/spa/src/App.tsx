@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Domain } from "./types";
 import { useStreaming, ChatMessage } from "./hooks/useStreaming";
+import { useSpeechRecognition } from "./hooks/useSpeechRecognition";
+import { useSpeechSynthesis } from "./hooks/useSpeechSynthesis";
 import { useAuth } from "./hooks/useAuth";
 import { Sidebar } from "./components/Sidebar";
 import { DomainPills } from "./components/DomainPill";
@@ -35,7 +37,7 @@ export default function App() {
   );
   const [messages, setMessages] = useState<Message[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [currentConversationId, setCurrentConversationId] = useState("");
+  const [currentConversationId, setCurrentConversationId] = useState<string>("");
   const [domains, setDomains] = useState<Domain[]>([]);
   // The LLM model currently in effect (from GET /api/model/status). Displayed in
   // the chat input line so the user sees which model they are talking to.
@@ -48,6 +50,63 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const toggleSidebar = () => setSidebarOpen((v) => !v);
   const closeSidebar = () => setSidebarOpen(false);
+
+  // --- Audio input (English-only Web Speech API) ---
+  // The hook appends transcripts to the current input value (with a leading
+  // newline) via `micTranscript` below. `isMicSupported` controls whether the
+  // mic button is rendered by ChatArea; `micError` is surfaced to the user as a
+  // toast-like message.
+  const [micTranscript, setMicTranscript] = useState<string | null>(null);
+  const [micError, setMicError] = useState<string | null>(null);
+  const { isSupported: isMicSupported, start: startMic } =
+    useSpeechRecognition((transcript) => setMicTranscript(transcript));
+
+  // --- Text-to-speech toggle for streamed responses ---
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const { isSpeaking, enqueue: ttsEnqueue, flush: ttsFlush, stop: ttsStop } =
+    useSpeechSynthesis();
+
+  // Apply the pending transcript into the textarea, refocus, then clear.
+  const applyMicTranscript = useCallback(() => {
+    const transcript = micTranscript;
+    setMicTranscript(null);
+    if (!transcript) return;
+    if (micError) {
+      setMicError(null);
+    }
+    // Prepend a newline so the voice transcript lands on its own line,
+    // then append the transcript.
+    const next = (inputValueRef.current.length ? "\n" : "") + transcript;
+    setInputValue(next);
+    // Restore focus to the textarea so the user can review or submit it.
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+  }, [micTranscript, micError]);
+
+  // Start listening, then immediately refocus the textarea and begin applying.
+  const onMicClick = useCallback(() => {
+    if (!isMicSupported) {
+      setMicError(
+        "Speech recognition is not supported in this browser (needs https/localhost)."
+      );
+      return;
+    }
+    setMicError(null);
+    startMic();
+    // Small delay so recognition has a moment to start before we apply output.
+    requestAnimationFrame(applyMicTranscript);
+  }, [isMicSupported, startMic, applyMicTranscript]);
+
+  // --- Text-to-speech toggle for streamed responses ---
+  // Toggling off also stops any currently-playing audio so the change is
+  // immediate rather than waiting for the queue to drain.
+  const onToggleTts = useCallback(() => {
+    setTtsEnabled((prev) => {
+      if (prev) ttsStop();
+      return !prev;
+    });
+  }, [ttsStop]);
 
   // --- Auth ---
   const { initialized, user, login, logout } = useAuth(API_BASE, () => setNeedLogin(true));
@@ -86,7 +145,6 @@ export default function App() {
       setSelectedSubCategory(null);
       setCurrentConversationId("");
       setMessages([]);
-      setNeedLogin(false);
       resetStreaming();
     }
   }, [showAuthedUI, initialized]);
@@ -169,6 +227,10 @@ export default function App() {
   const chatHistoryRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [inputValue, setInputValue] = useState("");
+  // Mirrored ref so the mic callback (defined above inputValue's
+  // declaration) can read the current value without a TDZ issue.
+  const inputValueRef = useRef(inputValue);
+  inputValueRef.current = inputValue;
 
   // --- Fetch domains on mount ---
   useEffect(() => {
@@ -254,6 +316,28 @@ export default function App() {
       inputRef.current.focus();
     }
   }, [streamingState.isStreaming, inputValue]);
+
+  // --- Text-to-speech: feed each new streaming chunk to the speech engine ---
+  // When TTS is enabled we enqueue every freshly-received chunk so the spoken
+  // output tracks the on-screen text in real time. `currentChunk` changes
+  // precisely once per streamed token, so this is the right signal. The hook
+  // itself buffers words and speaks them sequentially.
+  useEffect(() => {
+    if (!ttsEnabled) return;
+    if (!streamingState.isStreaming) return;
+    const chunk = streamingState.currentChunk;
+    if (!chunk) return;
+    ttsEnqueue(chunk);
+  }, [streamingState.currentChunk, streamingState.isStreaming, ttsEnabled]);
+
+  // When a stream ends (successfully or not), flush any trailing partial word
+  // so the spoken output isn't cut off, then clear the pending state.
+  useEffect(() => {
+    if (ttsEnabled && streamingStartedRef.current && !streamingState.isStreaming) {
+      ttsFlush();
+      streamingStartedRef.current = false;
+    }
+  }, [streamingState.isStreaming, ttsEnabled]);
 
   // --- Listen for streaming completion ---
   useEffect(() => {
@@ -1046,6 +1130,10 @@ export default function App() {
           isLoading={streamingState.isStreaming}
           onSend={handleSubmit}
           onStop={handleStop}
+          onMicClick={onMicClick}
+          ttsEnabled={ttsEnabled}
+          onToggleTts={onToggleTts}
+          isSpeaking={isSpeaking}
         />
       </main>
     </div>
