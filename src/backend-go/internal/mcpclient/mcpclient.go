@@ -144,9 +144,8 @@ func (s *sseReadWriteCloser) Write(p []byte) (int, error) {
 
 // MCPManagerConfig holds everything NewManager needs to choose a transport
 // and to filter tool names. Priority: MCP_ENDPOINT (streamable HTTP) >
-// MCP_TOOL_EXEC_CMD (verbatim command launch) > MCP_SERVER_PATH (legacy stdio).
+// MCP_TOOL_EXEC_CMD (verbatim command launch).
 type MCPManagerConfig struct {
-	MCPServerPath  string
 	MCPWorkDir     string
 	MCPToolExecCmd string
 	MCPServerURL   string
@@ -207,29 +206,19 @@ func applyBlockFilter(allTools []mcpTool, re []*regexp.Regexp) []mcpTool {
 }
 
 // expandCmd expands a verbatim command template into exec arguments.
-// Tokens ${tool}, ${args}, ${workdir} are substituted. The remainder after
-// substitution is split on whitespace into individual argv entries.
+// The only supported substitution token is ${workdir}, which is replaced with
+// the configured work directory. The remainder is split on whitespace into
+// individual argv entries.
 //
 // This lets operators launch a stdio MCP server with arbitrary options, e.g.:
 //
-//	MCP_TOOL_EXEC_CMD="python3 -m my_mcp_server ${args} --workdir ${workdir}"
+//	MCP_TOOL_EXEC_CMD="python3 -m my_mcp_server"
 //	MCP_TOOL_EXEC_CMD="node --max-old-space-size=2048 ./server.js"
-func expandCmd(template, defaultServerPath, workdir string) ([]string, error) {
-	// First, expand ${args} if present. ${args} falls back to defaultServerPath
-	// (the legacy MCP_SERVER_PATH) when the template does not reference it.
-	args := defaultServerPath
+func expandCmd(template, workdir string) ([]string, error) {
 	expanded := template
-	if strings.Contains(expanded, "${args}") {
-		expanded = strings.ReplaceAll(expanded, "${args}", args)
-	} else if strings.Contains(expanded, "${tool}") {
-		expanded = strings.ReplaceAll(expanded, "${tool}", defaultServerPath)
-	}
 	if strings.Contains(expanded, "${workdir}") {
 		expanded = strings.ReplaceAll(expanded, "${workdir}", workdir)
 	}
-	expanded = strings.ReplaceAll(expanded, "${tool}", defaultServerPath)
-	expanded = strings.ReplaceAll(expanded, "${args}", args)
-	expanded = strings.ReplaceAll(expanded, "${workdir}", workdir)
 
 	fields := strings.Fields(expanded)
 	if len(fields) == 0 {
@@ -242,8 +231,7 @@ func expandCmd(template, defaultServerPath, workdir string) ([]string, error) {
 //
 // Priority (highest first):
 //  1. MCP_ENDPOINT  — streamable-HTTP endpoint (http://host:port/mcp).
-//  2. MCP_TOOL_EXEC_CMD — verbatim command template executed to launch stdio.
-//  3. MCP_SERVER_PATH — legacy whitespace-split stdio command.
+//  2. MCP_TOOL_EXEC_CMD — verbatim command template executed to launch stdio.//
 //
 // MCP_BLOCK_LIST (comma-separated regex/substring tool-name filters) is applied
 // by the returned client in both Tools() and CallTool().
@@ -268,7 +256,7 @@ func NewManager(cfg MCPManagerConfig) (newMCP *ResilientMCPClient) {
 	// Priority 2: verbatim command template for stdio.
 	cmd := strings.TrimSpace(cfg.MCPToolExecCmd)
 	if cmd != "" {
-		parts, e := expandCmd(cmd, cfg.MCPServerPath, cfg.MCPWorkDir)
+		parts, e := expandCmd(cmd, cfg.MCPWorkDir)
 		if e != nil {
 			fmt.Fprintf(os.Stderr, "❌ MCP command template expansion failed: %v\n", e)
 			return nil
@@ -286,19 +274,8 @@ func NewManager(cfg MCPManagerConfig) (newMCP *ResilientMCPClient) {
 		return m
 	}
 
-	// Priority 3: legacy whitespace-split stdio command.
-	if cfg.MCPServerPath == "" {
-		return nil
-	}
-	parts := strings.Fields(cfg.MCPServerPath)
-	fmt.Fprintf(os.Stderr, "🚀 Launching MCP stdio server: %v\n", parts)
-	m, err := NewResilientStdio(parts, cfg.MCPWorkDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ MCP connect failed: %v\n", err)
-		return nil
-	}
-	m.blockRe = compileBlockList(cfg.MCPBlockList)
-	return m
+	// No transport configured — report MCP as unavailable.
+	return nil
 }
 
 // ConnectStreamableHTTP connects to a modern MCP server using the Streamable HTTP
@@ -316,7 +293,27 @@ func ConnectStreamableHTTP(url string) (*MCPClient, error) {
 		conn: &sseReadWriteCloser{ReadCloser: io.NopCloser(strings.NewReader(""))},
 	}
 
-	if err := c.Initialize(); err != nil {
+	// Establish a session before any other request. Sending the "initialize"
+	// RPC is what makes the server assign a Mcp-Session-Id header; subsequent
+	// requests (tools/list, tools/call, ...) must carry that header. Without it
+	// the server answers with "HTTP 404: Invalid session ID" (matching the
+	// behaviour of the reference initialize() handshake).
+	initParams := map[string]interface{}{
+		"protocolVersion": "2025-03-26",
+		"capabilities":    map[string]interface{}{},
+		"clientInfo": map[string]interface{}{
+			"name":    "aig",
+			"version": "1.0.0",
+		},
+	}
+	if _, err := c.call("initialize", initParams); err != nil {
+		// A missing/absent initialize response is non-fatal for some servers;
+		// still attempt to proceed so tools/list can run against whatever
+		// session may have been created by the header above.
+		fmt.Fprintf(os.Stderr, "⚠️  MCP initialize skipped/failed: %v\n", err)
+	}
+
+	if err := c.refreshTools(); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -542,41 +539,6 @@ func (c *MCPClient) call(method string, params interface{}) (*jsonRPCResponse, e
 }
 
 // ---------------------------------------------------------------------------
-// MCP protocol handshake
-// ---------------------------------------------------------------------------
-
-func (c *MCPClient) Initialize() error {
-	// params := map[string]interface{}{
-	// 	"protocolVersion": "2024-11-05",
-	// 	"capabilities":    map[string]interface{}{},
-	// 	"clientInfo": map[string]interface{}{
-	// 		"name":    "aig",
-	// 		"version": "1.0.0",
-	// 	},
-	// }
-	// resp, err := c.call("Initialize", params)
-	// if err != nil {
-	// 	return fmt.Errorf("Initialize: %w", err)
-	// }
-	// if resp.Error != nil {
-	// 	return fmt.Errorf("Initialize error: %s", resp.Error.Message)
-	// }
-
-	if !c.isStreamableHTTP {
-		// SSE/stdio/TCP: send Initialized notification normally
-		c.mu.Lock()
-		_ = c.send(jsonRPCRequest{
-			JSONRPC: "2.0",
-			Method:  "notifications/Initialized",
-		})
-		c.mu.Unlock()
-	}
-	// Streamable HTTP: skip the notification — the server holds the connection
-	// open waiting for a stream and never sends a response, causing a hang.
-
-	return c.refreshTools()
-}
-
 func (c *MCPClient) refreshTools() error {
 	resp, err := c.call("tools/list", nil)
 	if err != nil {
@@ -759,12 +721,12 @@ type ResilientMCPClient struct {
 	// set only for stdio transports (empty for Streamable HTTP) and threaded
 	// through ConnectStdio so the child actually chdir's there; the value is
 	// also carried across reconnect so an auto-restarted child keeps cwd.
-	workdir      string
-	hasWorkdir   bool
+	workdir         string
+	hasWorkdir      bool
 	partsForConnect []string
-	maxRetry     int
-	backoff      time.Duration
-	Spec         string
+	maxRetry        int
+	backoff         time.Duration
+	Spec            string
 }
 
 func NewResilientStdio(parts []string, workdir string) (*ResilientMCPClient, error) {
@@ -782,11 +744,11 @@ func NewResilientStdio(parts []string, workdir string) (*ResilientMCPClient, err
 		partsForConnect: parts,
 		// Persist the resolved workdir on the struct so reconnect() reuses the
 		// same directory for an auto-restarted child.
-		workdir:      resolved,
-		hasWorkdir:   isResolved,
-		maxRetry:      3,
-		backoff:       500 * time.Millisecond,
-		Spec:          inner.spec,
+		workdir:    resolved,
+		hasWorkdir: isResolved,
+		maxRetry:   3,
+		backoff:    500 * time.Millisecond,
+		Spec:       inner.spec,
 	}, nil
 }
 
@@ -934,7 +896,6 @@ func (r *ResilientMCPClient) RefreshTools() error {
 	return r.refreshTools()
 }
 
-
 func (r *ResilientMCPClient) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1002,7 +963,7 @@ func ConnectStdio(parts []string, workdir string) (*MCPClient, error) {
 	c := &MCPClient{conn: pw, spec: parts[0]}
 	c.scanner = bufio.NewScanner(stdout)
 	c.scanner.Buffer(make([]byte, 4*1024*1024), 4*1024*1024)
-	if err := c.Initialize(); err != nil {
+	if err := c.refreshTools(); err != nil {
 		pw.Close()
 		return nil, err
 	}

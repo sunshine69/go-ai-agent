@@ -77,7 +77,6 @@ func main() {
 			workdir = wd
 		}
 		manager = mcpclient.NewManager(mcpclient.MCPManagerConfig{
-			MCPServerPath:  cfg.MCPServerPath,
 			MCPWorkDir:     workdir,
 			MCPToolExecCmd: cfg.MCPToolExecCmd,
 			MCPServerURL:   cfg.MCPServerURL,
@@ -89,9 +88,6 @@ func main() {
 			// server still comes up for the other endpoints.
 			log.Printf("warning: MCP manager failed to initialise; knowledge-base search will be unavailable")
 		} else {
-			if err := manager.Inner.Initialize(); err != nil {
-				log.Printf("warning: MCP init failed, some tools will be unavailable: %v", err)
-			}
 			defer manager.Inner.Close()
 		}
 	} else {

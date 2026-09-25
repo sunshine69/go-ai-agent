@@ -59,16 +59,14 @@ type Config struct {
 	ShowThinking bool
 
 	// MCP (stdio subprocess to the structured-data search server)
-	MCPEnabled    bool
-	MCPServerPath string
-	MCPWorkDir    string
+	MCPEnabled bool
+	MCPWorkDir string
 	// MCP_TOOL_EXEC_CMD: a command template executed verbatim to launch a stdio
-	// MCP server. Tokens ${tool}, ${args}, ${workdir} are substituted. Takes
-	// precedence over MCP_SERVER_PATH. Optional.
+	// MCP server. The ${workdir} token is substituted with the configured
+	// work directory. Optional.
 	MCPToolExecCmd string
 	// MCP_ENDPOINT: a streamable-HTTP MCP endpoint (http://host:port/mcp) to
-	// connect to. If set, it takes precedence over MCP_TOOL_EXEC_CMD and
-	// MCP_SERVER_PATH (the app connects via Streamable HTTP). Optional.
+	// connect to. If set, it takes precedence over MCP_TOOL_EXEC_CMD
 	MCPServerURL string
 	// MCP_BLOCK_LIST: comma-separated list of tool-name filters (regex or plain
 	// substring) the model may NOT call. Optional. Default empty = no blocks.
@@ -238,7 +236,7 @@ func Load(envDotPath string) *Config {
 		ShowThinking:        envBool("SHOW_THINKING", false),
 
 		MCPEnabled:        envBool("MCP_ENABLED", true),
-		MCPServerPath:     envKey("MCP_SERVER_PATH", "geniq-mcp-server"),
+		MCPServerURL:      envKey("MCP_ENDPOINT", ""),
 		MCPToolExecCmd:    envKey("MCP_TOOL_EXEC_CMD", ""),
 		MCPWorkDir:        envKey("MCP_WORK_DIR", wd),
 		MCPBlockList:      envKey("MCP_BLOCK_LIST", ""),
