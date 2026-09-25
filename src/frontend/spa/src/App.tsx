@@ -330,16 +330,20 @@ export default function App() {
     ttsEnqueue(chunk);
   }, [streamingState.currentChunk, streamingState.isStreaming, ttsEnabled]);
 
-  // When a stream ends (successfully or not), flush any trailing partial word
-  // so the spoken output isn't cut off, then clear the pending state.
-  useEffect(() => {
-    if (ttsEnabled && streamingStartedRef.current && !streamingState.isStreaming) {
-      ttsFlush();
-      streamingStartedRef.current = false;
-    }
-  }, [streamingState.isStreaming, ttsEnabled]);
-
   // --- Listen for streaming completion ---
+  // This single effect owns the "stream just ended" lifecycle: it flushes any
+  // trailing TTS text AND appends the final answer to the message history, then
+  // clears the pending flag.
+  //
+  // It must be ONE effect. Previously the TTS-flush and the completion logic
+  // lived in two separate effects that both fired when isStreaming flipped to
+  // false. Because the flush effect was declared first, it ran first and cleared
+  // `streamingStartedRef.current`; the completion effect then saw the flag as
+  // false and skipped the branch that appends the assistant message. The
+  // streamed text was only ever rendered from the inline streaming bubble (which
+  // is gated on isStreaming), so it vanished when the stream ended — the screen
+  // went blank. Keeping the flush + message-append together in this single
+  // effect avoids that race so the text stays on screen.
   useEffect(() => {
     // Only process completion if we were streaming and now stopped
     if (streamingStartedRef.current && !streamingState.isStreaming) {
@@ -348,6 +352,13 @@ export default function App() {
       // Capture conversation ID
       if (latest.conversationId) {
         setCurrentConversationId(latest.conversationId);
+      }
+
+      // Flush any trailing TTS text so the spoken output isn't cut off.
+      // Done here (not in a separate effect) so it cannot clear the flag before
+      // the message-append below runs.
+      if (ttsEnabled) {
+        ttsFlush();
       }
 
       if (latest.fullAnswer) {
@@ -374,7 +385,7 @@ export default function App() {
 
       streamingStartedRef.current = false;
     }
-  }, [streamingState.isStreaming]);
+  }, [streamingState.isStreaming, ttsEnabled, ttsFlush]);
 
   // --- Handlers ---
   const handleNewConversation = async () => {
