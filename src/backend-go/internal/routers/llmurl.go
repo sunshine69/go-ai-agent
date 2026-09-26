@@ -76,6 +76,27 @@ func resolveLLMURL(dbStore *db.DB, uid int64) string {
 	return normalizeLLMBaseURL(raw)
 }
 
+// settingKeyModelName is the user_settings key under which the per-user model
+// name override (set via /m) is stored. It survives a backend restart because
+// it is read from the DB on every request via applyUserLLMModel.
+const settingKeyModelName = "model_name"
+
+// resolveModelName returns the caller's effective model name: the stored
+// "model_name" setting when set and non-blank, otherwise "" (unset), meaning
+// the backend uses its configured default (cfg.LLMModel). It is the single
+// source of truth the chat handlers consult so a user's /m choice shapes the
+// model a later message is served from.
+func resolveModelName(dbStore *db.DB, uid int64) string {
+	if dbStore == nil || dbStore.Settings == nil {
+		return ""
+	}
+	raw, err := dbStore.Settings.Get(uid, settingKeyModelName)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(raw)
+}
+
 // normalizeLLMBaseURL cleans a raw stored value into the canonical base form:
 // it trims surrounding whitespace and drops a trailing "/chat/completions" so
 // the value stays a base host (the system appends that path itself). An empty

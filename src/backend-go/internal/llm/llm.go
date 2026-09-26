@@ -213,6 +213,28 @@ func (c *Client) WithBaseURL(baseURL string) *Client {
 	return &clone
 }
 
+// WithModel returns a copy of the client that uses a different model name.
+// It is used to honour a user's per-user /m override without mutating the
+// shared default client (which the process-wide Config binds to). The
+// returned client keeps the base URL, api key, and HTTP timeout; only the
+// model changes. A blank model name returns the receiver unchanged.
+//
+// The backend family is re-resolved because the model name is the primary
+// signal for wire-format detection (llama.cpp / ollama vs generic OpenAI).
+func (c *Client) WithModel(model string) *Client {
+	if model == "" {
+		return c
+	}
+	clone := *c
+	clone.cfg.Model = model
+	// Re-resolve the backend family for the new model name: it affects the
+	// wire tool_choice representation. Backend is detected from model/URL
+	// when not explicitly set.
+	clone.cfg.Backend = ""
+	clone.backend = detectBackend(clone.cfg)
+	return &clone
+}
+
 // Backend reports the resolved wire-format family ("llama_cpp", "ollama", or
 // "" for the generic OpenAI object form). It is safe to call before any request.
 func (c *Client) Backend() string { return c.backend }
@@ -258,6 +280,10 @@ func (c *Client) Model() string { return c.cfg.Model }
 // model to be changed without restarting the server (the SPA's `/m` command).
 // Subsequent completion requests use the new model. A blank model name is a
 // no-op so callers can pass user input without pre-filtering.
+//
+// NOTE: This mutates the receiver in place and is NOT per-user. Prefer
+// WithModel() for per-request overrides that must not affect other users.
+// Retained for backward compatibility with the /api/model/set endpoint.
 func (c *Client) SetModel(model string) {
 	if model == "" {
 		return
@@ -357,8 +383,8 @@ type streamDelta struct {
 }
 
 // streamToolCallDelta is one streamed tool-call fragment. Its "index" groups
-// fragments that belong to the same model-issued tool call (which the server
-// may split across many chunks before emitting the arguments).
+// fragments that belong to the same model-issued tool call (the server may
+// split it across many chunks before emitting the arguments).
 type streamToolCallDelta struct {
 	Index    int              `json:"index,omitempty"`
 	ID       string           `json:"id,omitempty"`
@@ -367,7 +393,7 @@ type streamToolCallDelta struct {
 }
 
 // streamContent returns the incremental text in this choice, preferring the
-// delta form, then falling back to the full message form.
+// delta form, then falling back to the full-message form.
 func (s streamChoice) streamContent() string {
 	if s.Delta.Content != "" {
 		return s.Delta.Content

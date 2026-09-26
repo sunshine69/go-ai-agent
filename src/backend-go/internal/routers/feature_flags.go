@@ -18,7 +18,12 @@ import (
 // dependencies. It is used by the message handlers when the FEATURE_TOOL_USE
 // knob enables tool mode. A nil controller means "tool use unavailable" — the
 // caller falls back to the hybrid ContextBuilder path.
-func newToolUseController(r *http.Request, h Handlers, baseURL string) *tooluse.ToolUse {
+//
+// llmClient is the fully-resolved client for this request: it already carries
+// the per-user /url base-URL override AND the per-user /m model override, so
+// the controller talks to the correct host and model without the caller
+// re-resolving either.
+func newToolUseController(r *http.Request, h Handlers, llmClient *llm.Client) *tooluse.ToolUse {
 	// When MCP is disabled the model has no tools to call, so there is no
 	// point entering tool mode; the controller would loop with every tool
 	// returning "unavailable".
@@ -30,7 +35,7 @@ func newToolUseController(r *http.Request, h Handlers, baseURL string) *tooluse.
 	if maxCalls <= 0 {
 		maxCalls = 5
 	}
-	return tooluse.New(h.LLM.WithBaseURL(baseURL), provider, maxCalls)
+	return tooluse.New(llmClient, provider, maxCalls)
 }
 
 // shouldUseToolUse reports whether the tool-use controller should serve the
@@ -53,7 +58,7 @@ func shouldUseToolUse(ctx context.Context, cfg *config.Config, llmClient *llm.Cl
 	case "false":
 		return false
 	default: // "auto" (or anything else) — probe once.
-		return probeToolUse(ctx, cfg, llmClient)
+		return probeToolUse(ctx, llmClient)
 	}
 }
 
@@ -61,7 +66,7 @@ func shouldUseToolUse(ctx context.Context, cfg *config.Config, llmClient *llm.Cl
 // server supports function calling. It returns true only when the server
 // responds with tool_calls (i.e. it can act on them). Probe failures fall back
 // to hybrid mode so plain questions never break.
-func probeToolUse(ctx context.Context, cfg *config.Config, llmClient *llm.Client) bool {
+func probeToolUse(ctx context.Context, llmClient *llm.Client) bool {
 	if llmClient == nil {
 		return false
 	}
@@ -85,8 +90,11 @@ func probeToolUse(ctx context.Context, cfg *config.Config, llmClient *llm.Client
 		},
 	}
 
+	// Use the model name from the resolved client (which already carries the
+	// per-user /m override) rather than cfg.LLMModel, so the probe targets the
+	// same model the user selected.
 	reqBody := llm.CompletionRequest{
-		Model: cfg.LLMModel,
+		Model: llmClient.Model(),
 		Messages: []llm.ChatMessage{
 			{Role: "user", Content: "Use the available tool now."},
 		},

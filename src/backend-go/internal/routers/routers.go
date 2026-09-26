@@ -142,6 +142,33 @@ func (h *Handlers) applyUserLLMURL(cfg *config.Config, r *http.Request) string {
 	log.Printf("[LLMURL] applyUserLLMURL uid=%d cfg=%q override=%q -> base=%q", uid, cfg.LLMBASEURL, override, base)
 	return base
 }
+
+// applyUserLLMModel returns a clone of the LLM client that honours the
+// caller's stored per-user model name override (via /m) over the configured
+// default (cfg.LLMModel). When the user has no override it returns the client
+// unchanged. It is nil-safe. Callers MUST use the returned client for every
+// LLM call in the request path so a user's /m choice shapes the model a later
+// message is served from, and the choice persists across backend restarts
+// because it is stored in the user_settings table.
+func (h *Handlers) applyUserLLMModel(client *llm.Client, r *http.Request) *llm.Client {
+	if client == nil {
+		return client
+	}
+	if h.DB == nil || h.DB.Settings == nil {
+		return client
+	}
+	uid, ok := currentUserID(r)
+	if !ok {
+		return client
+	}
+	model := resolveModelName(h.DB, uid)
+	if model == "" {
+		return client
+	}
+	log.Printf("[MODEL] applyUserLLMModel uid=%d cfg=%q override=%q -> effective=%q",
+		uid, client.Model(), model, model)
+	return client.WithModel(model)
+}
 // ServeMux builds the router for the backend: the /api/* handlers plus, when
 // configured, the /frontend/* SPA static file server.
 func (h Handlers) ServeMux() http.Handler {

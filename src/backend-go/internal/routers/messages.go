@@ -152,7 +152,18 @@ func (m *messagesHandler) handle(w http.ResponseWriter, r *http.Request) {
 	for _, t := range history {
 		chatHistory = append(chatHistory, llm.ChatMessage{Role: t.Role, Content: t.Content})
 	}
-	answer := m.h.LLM.Answer(r.Context(), resolveSystemPrompt(m.h.DB, currentUserIDOr(r, 0)), chatHistory, contextText, msg)
+	// Resolve the user's per-user LLM URL override (/url endpoint) AND model
+	// override (/m endpoint). Both are stored in user_settings and survive a
+	// backend restart. The hybrid path previously ignored both, always using
+	// m.h.Cfg.LLMBASEURL and m.h.Cfg.LLMModel.
+	llmClient := m.h.LLM
+	if llmClient != nil {
+		if base := m.h.applyUserLLMURL(m.h.Cfg, r); base != "" {
+			llmClient = llmClient.WithBaseURL(base)
+		}
+		llmClient = m.h.applyUserLLMModel(llmClient, r)
+	}
+	answer := llmClient.Answer(r.Context(), resolveSystemPrompt(m.h.DB, currentUserIDOr(r, 0)), chatHistory, contextText, msg)
 
 	// --- Persist the current turn -----------------------------------------
 	// The assistant answer is persisted separately from the user turn.

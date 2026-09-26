@@ -166,22 +166,33 @@ func (m *messageStreamHandler) runToolUse(w http.ResponseWriter, r *http.Request
 	// cancelled if the client disconnects, so no extra deadline is needed.
 	toolCtx := r.Context()
 
-	// Resolve the user's per-user LLM URL override (/url endpoint). This is
-	// the critical fix: runToolUse previously ignored the override and always
-	// used m.h.Cfg.LLMBASEURL, causing responses to be sent to the wrong host.
+	// Resolve the user's per-user LLM URL override (/url endpoint) AND model
+	// override (/m endpoint). Both are stored in user_settings and survive a
+	// backend restart. Previously runToolUse ignored both, always using
+	// m.h.Cfg.LLMBASEURL and m.h.Cfg.LLMModel.
 	effectiveBase := m.h.applyUserLLMURL(m.h.Cfg, r)
-	log.Printf("[LLMURL] runToolUse: uid=%d cfg.LLMBASEURL=%q override=%q -> effective=%q",
-		currentUserIDOr(r, 0), m.h.Cfg.LLMBASEURL, resolveLLMURL(m.h.DB, currentUserIDOr(r, 0)), effectiveBase)
+	// Build the fully-resolved client: base-URL override + model override.
+	// This client is passed to both the controller and the capability probe so
+	// the tool-use path talks to the correct host and model.
+	effectiveClient := m.h.LLM
+	if effectiveClient != nil {
+		if effectiveBase != "" {
+			effectiveClient = effectiveClient.WithBaseURL(effectiveBase)
+		}
+		effectiveClient = m.h.applyUserLLMModel(effectiveClient, r)
+	}
+	log.Printf("[LLMURL] runToolUse: uid=%d cfg.LLMBASEURL=%q override=%q -> effective=%q model=%q",
+		currentUserIDOr(r, 0), m.h.Cfg.LLMBASEURL, resolveLLMURL(m.h.DB, currentUserIDOr(r, 0)), effectiveBase, effectiveClient.Model())
 
 	// Build the controller. A nil controller means MCP is disabled, so there is
 	// no point entering tool mode — fall back to hybrid.
-	ctl := newToolUseController(r, m.h, effectiveBase)
+	ctl := newToolUseController(r, m.h, effectiveClient)
 	if ctl == nil {
 		return false, nil
 	}
 	// Probe-confirm tool-call support in "auto" mode (or honor "true"). When
 	// the server cannot call tools we return false so the caller keeps serving.
-	if !shouldUseToolUse(toolCtx, m.h.Cfg, m.h.LLM.WithBaseURL(effectiveBase)) {
+	if !shouldUseToolUse(toolCtx, m.h.Cfg, effectiveClient) {
 		return false, nil
 	}
 
@@ -264,20 +275,29 @@ func (m *messageStreamHandler) runToolUseBlocking(r *http.Request, conv db.ConvV
 	// Scope the loop to a generous timeout.
 	toolCtx := r.Context()
 
-	// Resolve the user's per-user LLM URL override (/url endpoint). This is
-	// the critical fix: runToolUseBlocking previously ignored the override and
-	// always used m.h.Cfg.LLMBASEURL, causing responses to be sent to the wrong host.
+	// Resolve the user's per-user LLM URL override (/url endpoint) AND model
+	// override (/m endpoint). Both are stored in user_settings and survive a
+	// backend restart. Previously runToolUseBlocking ignored both, always
+	// using m.h.Cfg.LLMBASEURL and m.h.Cfg.LLMModel.
 	effectiveBase := m.h.applyUserLLMURL(m.h.Cfg, r)
+	// Build the fully-resolved client: base-URL override + model override.
+	effectiveClient := m.h.LLM
+	if effectiveClient != nil {
+		if effectiveBase != "" {
+			effectiveClient = effectiveClient.WithBaseURL(effectiveBase)
+		}
+		effectiveClient = m.h.applyUserLLMModel(effectiveClient, r)
+	}
 
 	// Build the controller. A nil controller means MCP is disabled, so there is
 	// no point entering tool mode — fall back to hybrid.
-	ctl := newToolUseController(r, m.h, effectiveBase)
+	ctl := newToolUseController(r, m.h, effectiveClient)
 	if ctl == nil {
 		return false, nil
 	}
 	// Probe-confirm tool-call support in "auto" mode (or honor "true"). When
 	// the server cannot call tools we return false so the caller keeps serving.
-	if !shouldUseToolUse(toolCtx, m.h.Cfg, m.h.LLM.WithBaseURL(effectiveBase)) {
+	if !shouldUseToolUse(toolCtx, m.h.Cfg, effectiveClient) {
 		return false, nil
 	}
 

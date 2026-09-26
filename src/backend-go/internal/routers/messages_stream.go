@@ -246,6 +246,17 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	log.Printf("[STREAM] [12/14] applyUserCtxLimit: ContextLimit=%d (cfg.LLMBASEURL=%q)", cfg.ContextLimit, cfg.LLMBASEURL)
 	effectiveBase := m.h.applyUserLLMURL(cfg, r)
 	log.Printf("[STREAM] [12/14] Resolved AI Endpoint Base: %q", effectiveBase)
+	// Resolve the per-user model override (/m) so a user's model choice
+	// shapes the model this message is served from. Persists across restarts.
+	effectiveModel := m.h.Cfg.LLMModel
+	if m.h.DB != nil && m.h.DB.Settings != nil {
+		if uid, ok := currentUserID(r); ok {
+			if m := resolveModelName(m.h.DB, uid); m != "" {
+				effectiveModel = m
+			}
+		}
+	}
+	log.Printf("[STREAM] [12/14] Resolved model: %q (cfg=%q)", effectiveModel, m.h.Cfg.LLMModel)
 	history = contextcompress.TrimContext(r.Context(), cfg, history)
 	log.Printf("[STREAM] [12/14] TrimContext: history before=%d after=%d", len(history), len(history))
 	historyCM := make([]llm.ChatMessage, 0, len(history))
@@ -268,7 +279,7 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 	temp := m.h.Cfg.LLMTemperature
 	stream := true
 	reqBody := llm.CompletionRequest{
-		Model:       m.h.Cfg.LLMModel,
+		Model:       effectiveModel,
 		Messages:    msgs,
 		Temperature: &temp,
 		Stream:      &stream,
@@ -279,8 +290,8 @@ func (m *messageStreamHandler) handleStreamChat(w http.ResponseWriter, r *http.R
 		writeSSEError(w, "failed to marshal request")
 		return
 	}
-	log.Printf("[STREAM] [13/14] reqBody marshalled: model=%q temp=%v stream=%v", m.h.Cfg.LLMModel, temp, stream)
-	log.Printf("[LLM] hybrid stream request: base=%s model=%s messages=%d stream=true", effectiveBase, m.h.Cfg.LLMModel, len(msgs))
+	log.Printf("[STREAM] [13/14] reqBody marshalled: model=%q temp=%v stream=%v", effectiveModel, temp, stream)
+	log.Printf("[LLM] hybrid stream request: base=%s model=%s messages=%d stream=true", effectiveBase, effectiveModel, len(msgs))
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
@@ -475,6 +486,17 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	log.Printf("[PROXY] [12/14] applyUserCtxLimit: ContextLimit=%d (cfg.LLMBASEURL=%q)", cfg.ContextLimit, cfg.LLMBASEURL)
 	effectiveBase := m.h.applyUserLLMURL(cfg, r)
 	log.Printf("[PROXY] [12/14] Resolved AI Endpoint Base: %q", effectiveBase)
+	// Resolve the per-user model override (/m) so a user's model choice
+	// shapes the model this message is served from. Persists across restarts.
+	effectiveModel := m.h.Cfg.LLMModel
+	if m.h.DB != nil && m.h.DB.Settings != nil {
+		if uid, ok := currentUserID(r); ok {
+			if m := resolveModelName(m.h.DB, uid); m != "" {
+				effectiveModel = m
+			}
+		}
+	}
+	log.Printf("[PROXY] [12/14] Resolved model: %q (cfg=%q)", effectiveModel, m.h.Cfg.LLMModel)
 	history = contextcompress.TrimContext(r.Context(), cfg, history)
 	log.Printf("[PROXY] [12/14] TrimContext: history before=%d after=%d", len(history), len(history))
 	historyCM := make([]llm.ChatMessage, 0, len(history))
@@ -498,7 +520,7 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 	temp := m.h.Cfg.LLMTemperature
 	stream := true
 	reqBody := llm.CompletionRequest{
-		Model:       m.h.Cfg.LLMModel,
+		Model:       effectiveModel,
 		Messages:    msgs,
 		Temperature: &temp,
 		Stream:      &stream,
@@ -509,8 +531,8 @@ func (m *messageStreamHandler) proxyLLMStream(w http.ResponseWriter, r *http.Req
 		writeSSEError(w, "failed to marshal request")
 		return
 	}
-	log.Printf("[PROXY] [13/14] reqBody marshalled: model=%q temp=%v stream=%v", m.h.Cfg.LLMModel, temp, stream)
-	log.Printf("[LLM] hybrid stream request: base=%s model=%s messages=%d stream=true", effectiveBase, m.h.Cfg.LLMModel, len(msgs))
+	log.Printf("[PROXY] [13/14] reqBody marshalled: model=%q temp=%v stream=%v", effectiveModel, temp, stream)
+	log.Printf("[LLM] hybrid stream request: base=%s model=%s messages=%d stream=true", effectiveBase, effectiveModel, len(msgs))
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
