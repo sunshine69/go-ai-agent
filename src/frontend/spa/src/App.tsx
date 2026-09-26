@@ -65,6 +65,13 @@ export default function App() {
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const { isSpeaking, enqueue: ttsEnqueue, flush: ttsFlush, stop: ttsStop } =
     useSpeechSynthesis();
+  // Ref mirror of ttsEnabled. The SSE token callback below is invoked
+  // synchronously from inside useStreaming's parsing loop — outside any
+  // render — so it needs a way to read the *current* toggle value without
+  // being recreated on every toggle flip (and without going through state,
+  // which is exactly the mechanism that dropped tokens in the first place).
+  const ttsEnabledRef = useRef(ttsEnabled);
+  ttsEnabledRef.current = ttsEnabled;
 
   // Apply the pending transcript into the textarea, refocus, then clear.
   const applyMicTranscript = useCallback(() => {
@@ -317,18 +324,17 @@ export default function App() {
     }
   }, [streamingState.isStreaming, inputValue]);
 
-  // --- Text-to-speech: feed each new streaming chunk to the speech engine ---
-  // When TTS is enabled we enqueue every freshly-received chunk so the spoken
-  // output tracks the on-screen text in real time. `currentChunk` changes
-  // precisely once per streamed token, so this is the right signal. The hook
-  // itself buffers words and speaks them sequentially.
-  useEffect(() => {
-    if (!ttsEnabled) return;
-    if (!streamingState.isStreaming) return;
-    const chunk = streamingState.currentChunk;
-    if (!chunk) return;
-    ttsEnqueue(chunk);
-  }, [streamingState.currentChunk, streamingState.isStreaming, ttsEnabled]);
+  // NOTE: TTS is no longer fed from a `useEffect` watching
+  // `streamingState.currentChunk`. That relied on React rendering once per
+  // streamed token, which real SSE traffic does not guarantee: a single
+  // reader.read() chunk can carry several "message" events with no `await`
+  // between their setState calls, and React 18 batches all of them into one
+  // render — only the LAST token in that burst ever reached this effect, so
+  // every earlier token in the burst was silently never spoken (while still
+  // appearing correctly on screen, since fullAnswer accumulates on a ref).
+  // TTS is now fed directly via the `onToken` callback passed to
+  // `streamMessage` in handleSend, which fires synchronously per token
+  // regardless of render batching.
 
   // --- Listen for streaming completion ---
   // This single effect owns the "stream just ended" lifecycle: it flushes any
@@ -582,8 +588,17 @@ export default function App() {
     streamingStartedRef.current = true;
 
     // Start streaming — don't use await for the completion logic,
-    // let the useEffect handle it when isStreaming changes
-    streamMessage(payload).catch(() => {
+    // let the useEffect handle it when isStreaming changes.
+    streamMessage(payload, {
+      // Fires synchronously the instant each SSE token is parsed, inside
+      // useStreaming's read loop — before any setState/render happens. See
+      // the NOTE above the removed currentChunk effect for why this replaces
+      // the old state-driven approach: it's the only way to guarantee every
+      // token reaches TTS even when several arrive in the same network read.
+      onToken: (token) => {
+        if (ttsEnabledRef.current) ttsEnqueue(token);
+      },
+    }).catch(() => {
       // Don't propagate errors here — the useEffect will catch them
     });
   };

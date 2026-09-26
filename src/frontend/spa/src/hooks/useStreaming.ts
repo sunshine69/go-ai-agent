@@ -37,6 +37,20 @@ export interface ChatMessage {
   confluence_links?: ConfluenceLink[];
 }
 
+// Callbacks invoked synchronously, INLINE with SSE parsing — before any
+// setState/render happens. Use this for anything that must see every single
+// token (e.g. feeding a TTS queue). `currentChunk` on StreamingState is
+// state, and React 18 batches multiple setState calls that happen within one
+// synchronous burst (e.g. one reader.read() chunk containing several SSE
+// "message" events) into a single render — only the LAST value assigned to
+// a given field survives that render. `fullAnswer` is unaffected because it
+// is accumulated additively on a ref, but any consumer that needs the
+// per-token value itself (not just the final concatenation) will silently
+// miss tokens if it reads them off state. onToken sidesteps that entirely.
+export interface StreamCallbacks {
+  onToken?: (token: string) => void;
+}
+
 const initialStreamingState: StreamingState = {
   conversationId: "",
   sources: [],
@@ -69,7 +83,7 @@ export function useStreaming(apiBaseUrl: string) {
   }, []);
 
   const streamMessage = useCallback(
-    async (payload: ChatRequest): Promise<StreamingState> => {
+    async (payload: ChatRequest, callbacks?: StreamCallbacks): Promise<StreamingState> => {
       // Abort any previous streaming
       abortControllerRef.current?.abort();
       const controller = new AbortController();
@@ -170,6 +184,13 @@ export function useStreaming(apiBaseUrl: string) {
                     chunk = parsed.choices[0].delta.content;
                   }
                   if (chunk) {
+                    // Fire BEFORE the setState below. A single reader.read()
+                    // can contain many "message" events in a row (no await
+                    // between them), and React batches all their setState
+                    // calls into one render — this callback is the only way
+                    // a consumer sees every token rather than just the last
+                    // one in the burst.
+                    callbacks?.onToken?.(chunk);
                     const newAnswer = streamingStateRef.current.fullAnswer + chunk;
                     streamingStateRef.current = {
                       ...streamingStateRef.current,
@@ -181,6 +202,7 @@ export function useStreaming(apiBaseUrl: string) {
                 } catch {
                   // Raw text — might be a non-JSON chunk
                   if (dataStr && dataStr !== "[DONE]") {
+                    callbacks?.onToken?.(dataStr);
                     const newAnswer = streamingStateRef.current.fullAnswer + dataStr;
                     streamingStateRef.current = {
                       ...streamingStateRef.current,
