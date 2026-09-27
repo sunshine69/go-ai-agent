@@ -437,6 +437,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       <>
                         <button
                           className="sidebar-conversation-body"
+                          title={conv.title || "Untitled"}
                           onClick={() => {
                             if (selectedIds.length > 0) clearSelection();
                             onSelectConversation(conv.id);
