@@ -234,6 +234,36 @@ func (cr *ConversationRepo) DeleteMany(userID int64, ids []string) (int64, error
 	}
 	return deleted, tx.Commit()
 }
+// RenameConversation updates the title of a conversation owned by userID.
+// It returns the updated conversation view on success, or ErrNotFound when the
+// conversation does not exist or is not owned by the caller. An empty (or
+// whitespace-only) title is rejected with a plain error so the API layer can
+// surface a 400 rather than silently storing a blank title.
+//
+// The updated_at timestamp is bumped so the sidebar's default "last updated"
+// sort reflects the rename.
+func (cr *ConversationRepo) RenameConversation(userID int64, convID, newTitle string) (ConvView, error) {
+	id, err := ConvIDToSeq(convID)
+	if err != nil {
+		return ConvView{}, err
+	}
+	newTitle = strings.TrimSpace(newTitle)
+	if newTitle == "" {
+		return ConvView{}, errors.New("title cannot be empty")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	res, err := cr.db.db.ExecContext(context.Background(),
+		"UPDATE conversations SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+		newTitle, now, id, userID)
+	if err != nil {
+		return ConvView{}, err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ConvView{}, ErrNotFound
+	}
+	return cr.GetConversation(userID, convID)
+}
 // DeleteConversation removes a conversation (owned by userID).
 func (cr *ConversationRepo) DeleteConversation(userID int64, convID string) error {
 	id, err := ConvIDToSeq(convID)

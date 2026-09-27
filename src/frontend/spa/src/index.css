@@ -450,12 +450,14 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
 }
 
 
 .sidebar-conversation-body {
   display: flex;
   flex: 1;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -490,6 +492,12 @@ body {
   opacity: 0;
   transition: opacity 0.2s;
   font-size: 12px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  border-radius: 4px;
 }
 
 .sidebar-conversation:hover .sidebar-conversation-delete {
@@ -499,6 +507,86 @@ body {
 .sidebar-conversation-delete:hover {
   background: rgba(0,0,0,0.3);
   border-radius: 4px;
+}
+
+/* Rename trigger button (pencil) — hidden until row hover, like the delete btn. */
+.sidebar-conversation-rename-trigger {
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: var(--text-muted, #a9b7c9);
+  flex-shrink: 0;
+}
+
+.sidebar-conversation:hover .sidebar-conversation-rename-trigger {
+  opacity: 1;
+}
+
+.sidebar-conversation-rename-trigger:hover {
+  background: rgba(0,0,0,0.3);
+  color: var(--text-primary, #fff);
+}
+
+.sidebar-conversation-rename-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* Inline rename editor container (replaces the body button while editing). */
+.sidebar-conversation-rename {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-conversation-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-tertiary, #1e2a3a);
+  border: 1px solid var(--primary-color, #3b82f6);
+  border-radius: 4px;
+  color: var(--text-primary, #fff);
+  font-size: 13px;
+  padding: 4px 8px;
+  outline: none;
+}
+
+.sidebar-conversation-rename-input:focus {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+}
+
+.sidebar-conversation-rename-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.sidebar-conversation-rename-save {
+  color: #4ade80;
+}
+.sidebar-conversation-rename-save:hover {
+  background: rgba(74, 222, 128, 0.15);
+}
+
+.sidebar-conversation-rename-cancel {
+  color: var(--text-muted, #a9b7c9);
+}
+.sidebar-conversation-rename-cancel:hover {
+  background: rgba(0,0,0,0.3);
 }
 
 .sidebar-conversation-active {
@@ -2106,6 +2194,7 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
 }
 
 .sidebar-conversation-delete {
@@ -2115,6 +2204,12 @@ body {
   opacity: 0;
   transition: opacity 0.2s;
   font-size: 12px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 4px;
+  border-radius: 4px;
 }
 
 .sidebar-conversation:hover .sidebar-conversation-delete {

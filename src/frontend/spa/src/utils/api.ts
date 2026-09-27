@@ -396,6 +396,28 @@ export async function deleteConversations(
   return data.deleted ?? 0;
 }
 
+/**
+ * Renames a conversation — PATCH /api/conversations/{id}.
+ * Returns the updated conversation view (id, title, timestamps). Throws on
+ * 404 (not found / not owned) or 400 (empty title / bad body).
+ */
+export async function renameConversation(
+  apiBaseUrl: string,
+  id: string,
+  title: string
+): Promise<{ id: string; title: string; created_at: string; updated_at: string }> {
+  const res = await fetchWithToken(apiBaseUrl, {
+    url: `/api/conversations/${id}`,
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) {
+    throw new Error(await readErrorText(res));
+  }
+  return res.json() as Promise<{ id: string; title: string; created_at: string; updated_at: string }>;
+}
+
 /** Minimal DELETE helper using fetchWithToken. */
 export async function deleteJSON(
   apiBaseUrl: string,

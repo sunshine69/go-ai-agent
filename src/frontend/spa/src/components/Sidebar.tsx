@@ -25,6 +25,7 @@ interface SidebarProps {
   onChangeSelection: () => void;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
+  onRenameConversation: (id: string, title: string) => void;
   onClearAllConversations: () => void;
   onQuickAction: (domain: Domain) => void;
   domains: Domain[];
@@ -64,6 +65,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onChangeSelection,
   onSelectConversation,
   onDeleteConversation,
+  onRenameConversation,
   onClearAllConversations,
   onQuickAction,
   domains,
@@ -72,6 +74,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onClearConversation,
 }) => {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+
+  // Inline rename state: which conversation is being renamed, the draft title,
+  // and a ref so the input can auto-focus + select-all on open.
+  const [renameId, setRenameId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const renameInputRef = React.useRef<HTMLInputElement>(null);
   const [showUserPanel, setShowUserPanel] = useState(false);
 
   // Search / sort UI for the conversation list.
@@ -148,6 +156,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
     } finally {
       setIsDeleting(false);
       setDeleteMsg("");
+    }
+  };
+
+  // Open the inline rename editor for a conversation, pre-filling the draft
+  // with the current title.
+  const startRename = (id: string, currentTitle: string) => {
+    setRenameId(id);
+    setRenameDraft(currentTitle || "");
+  };
+  const cancelRename = () => {
+    setRenameId(null);
+    setRenameDraft("");
+  };
+  const commitRename = () => {
+    if (renameId == null) return;
+    const trimmed = renameDraft.trim();
+    if (!trimmed) {
+      cancelRename();
+      return;
+    }
+    onRenameConversation(renameId, trimmed);
+    cancelRename();
+  };
+  const handleRenameKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitRename();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelRename();
     }
   };
 
@@ -359,36 +397,99 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       />
                     </label>
 
-                    {/* Body: click to open (also clears selection if in multi-select mode) */}
-                    <button
-                      className="sidebar-conversation-body"
-                      onClick={() => {
-                        if (selectedIds.length > 0) clearSelection();
-                        onSelectConversation(conv.id);
-                      }}
-                      type="button"
-                    >
-                      <span className="sidebar-conversation-text">
-                        {conv.title || "Untitled"}
-                      </span>
-                      <span className="sidebar-conversation-datetime" title={dateTime}>
-                        {dateTime}
-                      </span>
-                    </button>
-
-                    {/* Single-delete button (only when not in multi-select mode) */}
-                    {!canMultiDelete && (
-                      <button
-                        className="sidebar-conversation-delete"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteConfirm(conv.id);
-                        }}
-                        aria-label={`Delete ${conv.title || "conversation"}`}
-                        type="button"
+                    {/* Body: either the inline rename input (when this conv is
+                        being edited) or the normal click-to-open button. */}
+                    {renameId === conv.id ? (
+                      <div
+                        className="sidebar-conversation-rename"
+                        onClick={(e) => e.stopPropagation()}
                       >
-                        🗑️
-                      </button>
+                        <input
+                          ref={renameInputRef}
+                          className="sidebar-conversation-rename-input"
+                          type="text"
+                          value={renameDraft}
+                          placeholder="Conversation name"
+                          aria-label={`Rename ${conv.title || "conversation"}`}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onKeyDown={handleRenameKeyDown}
+                          onBlur={commitRename}
+                          autoFocus
+                        />
+                        <button
+                          className="sidebar-conversation-rename-btn sidebar-conversation-rename-save"
+                          onClick={commitRename}
+                          aria-label="Save name"
+                          type="button"
+                        >
+                          ✓
+                        </button>
+                        <button
+                          className="sidebar-conversation-rename-btn sidebar-conversation-rename-cancel"
+                          onClick={cancelRename}
+                          aria-label="Cancel rename"
+                          type="button"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          className="sidebar-conversation-body"
+                          onClick={() => {
+                            if (selectedIds.length > 0) clearSelection();
+                            onSelectConversation(conv.id);
+                          }}
+                          type="button"
+                        >
+                          <span className="sidebar-conversation-text">
+                            {conv.title || "Untitled"}
+                          </span>
+                          <span className="sidebar-conversation-datetime" title={dateTime}>
+                            {dateTime}
+                          </span>
+                        </button>
+
+                        {/* Rename + delete buttons (only when not in multi-select mode) */}
+                        {!canMultiDelete && (
+                          <>
+                            <button
+                              className="sidebar-conversation-rename-trigger"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startRename(conv.id, conv.title || "");
+                              }}
+                              aria-label={`Rename ${conv.title || "conversation"}`}
+                              title="Rename"
+                              type="button"
+                            >
+                              <svg
+                                className="sidebar-conversation-rename-icon"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                aria-hidden="true"
+                              >
+                                <path d="M12 20h9" />
+                                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                              </svg>
+                            </button>
+                            <button
+                              className="sidebar-conversation-delete"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteConfirm(conv.id);
+                              }}
+                              aria-label={`Delete ${conv.title || "conversation"}`}
+                              type="button"
+                            >
+                              🗑️
+                            </button>
+                          </>
+                        )}
+                      </>
                     )}
                   </div>
                 );

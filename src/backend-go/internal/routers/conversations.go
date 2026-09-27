@@ -3,6 +3,7 @@
 // GET /api/conversations           (authed)  -> user's conversation list
 // POST /api/conversations          (authed)  -> {id,title,created_at,updated_at}
 // GET /api/conversations/{id}      (authed)  -> full conversation (only its own)
+// PATCH /api/conversations/{id}    (authed)  -> rename (only its own) {"title": "..."}
 // DELETE /api/conversations/{id}   (authed)  -> ok (only its own)
 // DELETE /api/conversations        (authed)  -> clear user's own conversations
 // POST  /api/conversations/bulk-delete  (authed) -> {"ids":[...]} multi-select delete
@@ -81,8 +82,8 @@ func (h *conversationsHandler) handleListAndCreate(w http.ResponseWriter, r *htt
 	}
 }
 
-// handleByID handles GET and DELETE for a specific conversation. Ownership is
-// enforced: a user can only touch their own conversation.
+// handleByID handles GET, PATCH (rename) and DELETE for a specific conversation.
+// Ownership is enforced: a user can only touch their own conversation.
 func (h *conversationsHandler) handleByID(w http.ResponseWriter, r *http.Request) {
 	uid, ok := currentUserID(r)
 	if !ok {
@@ -100,6 +101,24 @@ func (h *conversationsHandler) handleByID(w http.ResponseWriter, r *http.Request
 		view, err := h.db.Conversations.GetConversation(uid, id)
 		if err != nil {
 			writeError(w, http.StatusNotFound, "Conversation not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, h.toPublicView(view))
+	case http.MethodPatch:
+		var body struct {
+			Title string `json:"title"`
+		}
+		if err := decodeBody(r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		view, err := h.db.Conversations.RenameConversation(uid, id, body.Title)
+		if err != nil {
+			if err == db.ErrNotFound {
+				writeError(w, http.StatusNotFound, "Conversation not found")
+				return
+			}
+			writeError(w, http.StatusBadRequest, "failed to rename conversation")
 			return
 		}
 		writeJSON(w, http.StatusOK, h.toPublicView(view))

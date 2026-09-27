@@ -9,7 +9,7 @@ import { DomainPills } from "./components/DomainPill";
 import { SubCategoryPills } from "./components/SubCategoryPill";
 import { ChatArea } from "./components/ChatArea";
 import { Login } from "./components/Login";
-import { AuthError, fetchWithToken, deleteJSON, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir, getRAGWorkdir, setRAGWorkdir, getSystemPrompt, setSystemPrompt, getLLMURL, setLLMURL, getModelStatus, setModel, parseModelCommand } from "./utils/api";
+import { AuthError, fetchWithToken, deleteJSON, renameConversation, setSetting, getSettings, getMCPStatus, connectMCP, disconnectMCP, getMCPWorkdir, setMCPWorkdir, getRAGWorkdir, setRAGWorkdir, getSystemPrompt, setSystemPrompt, getLLMURL, setLLMURL, getModelStatus, setModel, parseModelCommand } from "./utils/api";
 const API_BASE =
 
   (import.meta.env.VITE_BACKEND_URL as string) || "";
@@ -500,6 +500,21 @@ export default function App() {
       setMessages([]);
       refreshConversations();
     } catch {}
+  };
+
+  // Renames a conversation via PATCH /api/conversations/{id}. On success it
+  // refreshes the sidebar list (which carries the new title + bumped
+  // updated_at). Errors are surfaced by the API helper; we swallow them here
+  // so a transient failure doesn't break the sidebar, and the user can retry.
+  const handleConversationRename = async (id: string, title: string) => {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    try {
+      await renameConversation(API_BASE, id, trimmed);
+      refreshConversations();
+    } catch {
+      // surface via API; swallow so the sidebar stays usable.
+    }
   };
 
   // Clears the active conversation (used by the /clear command and Settings
@@ -1111,6 +1126,7 @@ export default function App() {
         onChangeSelection={handleChangeSelection}
         onSelectConversation={handleConversationSelect}
         onDeleteConversation={handleConversationDelete}
+        onRenameConversation={handleConversationRename}
         onClearAllConversations={handleClearAllConversations}
         onQuickAction={handleSelectDomain}
         domains={domains}
