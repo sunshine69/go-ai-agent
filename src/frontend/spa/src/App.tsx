@@ -58,7 +58,7 @@ export default function App() {
   // toast-like message.
   const [micTranscript, setMicTranscript] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
-  const { isSupported: isMicSupported, start: startMic } =
+  const { isSupported: isMicSupported, isListening: isMicListening, start: startMic } =
     useSpeechRecognition((transcript) => setMicTranscript(transcript));
 
   // --- Text-to-speech toggle for streamed responses ---
@@ -1157,6 +1157,7 @@ export default function App() {
           onSend={handleSubmit}
           onStop={handleStop}
           onMicClick={onMicClick}
+          isMicListening={isMicListening}
           ttsEnabled={ttsEnabled}
           onToggleTts={onToggleTts}
           isSpeaking={isSpeaking}

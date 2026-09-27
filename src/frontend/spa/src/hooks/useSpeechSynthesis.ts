@@ -70,14 +70,16 @@ const CLEAN_RE = new RegExp(
 const MAX_UTTERANCE_LEN = 180;
 
 // Speaking rate — 0.9 is relaxed and clear. 1.0 sounds rushed for TTS.
-const SPEAK_RATE = 0.9;
+const SPEAK_RATE = 1.0;
 
 // Voice pinning for remote cloud voices (e.g. Google US English).
 const VOICE_LANG = "en-US";
 
 // Pause durations between utterances (ms).
-const PAUSE_AFTER_SENTENCE = 450; // after . ! ?
-const PAUSE_AFTER_CLAUSE = 180; // after , ; :
+//const PAUSE_AFTER_SENTENCE = 450; // after . ! ?
+const PAUSE_AFTER_SENTENCE = 100; // after . ! ?
+//const PAUSE_AFTER_CLAUSE = 180; // after , ; :
+const PAUSE_AFTER_CLAUSE = 50; // after , ; :
 
 /**
  * Determine the pause length based on the last character of the chunk
